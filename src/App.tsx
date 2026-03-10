@@ -48,7 +48,6 @@ function App() {
   const [lightIntensity, setLightIntensity] = useState(1);
   const [focalLength, setFocalLength] = useState(35);
   const [envIntensity, setEnvIntensity] = useState(1);
-  const [envRotation, setEnvRotation] = useState(0);
 
   // Material / Shader controls
   const [objectColor, setObjectColor] = useState('#e5e5e5');
@@ -298,10 +297,8 @@ function App() {
                 focalLength={focalLength}
                 onFocalLengthChange={setFocalLength}
                 envIntensity={envIntensity}
-              onEnvIntensityChange={setEnvIntensity}
-              envRotation={envRotation}
-              onEnvRotationChange={setEnvRotation}
-            />
+                onEnvIntensityChange={setEnvIntensity}
+              />
           </PopoverContent>
         </Popover>
 

@@ -1,14 +1,15 @@
 import React, { useState, useRef, useEffect } from 'react';
-import type { Layer } from '@/hooks/use3DPaint';
+import * as THREE from 'three';
+import type { GPULayer } from '@/hooks/useWebGLPaint';
 import { Layers, Plus, Trash2, Eye, EyeOff, ArrowUp, ArrowDown } from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
 
 interface LayerControls {
-  layers: Layer[];
+  layers: GPULayer[];
   activeLayerId: string | null;
   addLayer: () => void;
   removeLayer: (id: string) => void;
-  updateLayer: (id: string, updates: Partial<Layer>) => void;
+  updateLayer: (id: string, updates: Partial<GPULayer>) => void;
   setLayerActive: (id: string) => void;
   moveLayer: (id: string, direction: 'up' | 'down') => void;
 }
@@ -18,22 +19,10 @@ interface LayersPanelProps {
 }
 
 const blendModes = [
-  'source-over',
-  'multiply',
-  'screen',
-  'overlay',
-  'darken',
-  'lighten',
-  'color-dodge',
-  'color-burn',
-  'hard-light',
-  'soft-light',
-  'difference',
-  'exclusion',
-  'hue',
-  'saturation',
-  'color',
-  'luminosity'
+  { label: 'Normal', value: THREE.NormalBlending },
+  { label: 'Additive', value: THREE.AdditiveBlending },
+  { label: 'Subtractive', value: THREE.SubtractiveBlending },
+  { label: 'Multiply', value: THREE.MultiplyBlending },
 ];
 
 export const LayersPanel: React.FC<LayersPanelProps> = ({ layerControls }) => {
@@ -167,10 +156,10 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({ layerControls }) => {
                   <select
                     className="flex-1 bg-zinc-900 border border-white/10 rounded-md px-2 py-1 text-xs text-zinc-300 outline-none focus:ring-1 focus:ring-zinc-600"
                     value={layer.blendMode}
-                    onChange={(e) => updateLayer(layer.id, { blendMode: e.target.value as GlobalCompositeOperation })}
+                    onChange={(e) => updateLayer(layer.id, { blendMode: parseInt(e.target.value) as THREE.Blending })}
                   >
                     {blendModes.map(mode => (
-                      <option key={mode} value={mode}>{mode}</option>
+                      <option key={mode.label} value={mode.value}>{mode.label}</option>
                     ))}
                   </select>
                 </div>

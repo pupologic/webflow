@@ -16,8 +16,6 @@ interface EnvironmentPanelProps {
   onFocalLengthChange: (val: number) => void;
   envIntensity: number;
   onEnvIntensityChange: (val: number) => void;
-  envRotation: number;
-  onEnvRotationChange: (val: number) => void;
 }
 
 const MATCAPS = [
@@ -43,8 +41,6 @@ export const EnvironmentPanel: React.FC<EnvironmentPanelProps> = ({
   onFocalLengthChange,
   envIntensity,
   onEnvIntensityChange,
-  envRotation,
-  onEnvRotationChange,
 }) => {
   return (
     <div className="space-y-6 p-5 bg-[#09090b] rounded-xl border border-white/5 shadow-lg">
