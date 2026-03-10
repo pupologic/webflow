@@ -105,17 +105,17 @@ export const ColorPicker: React.FC<ColorPickerProps> = ({
   }, [hsv, updateColor]);
 
   useEffect(() => {
-    const handleMouseUp = () => {
+    const handlePointerUp = () => {
       isDraggingSV.current = false;
     };
-    const handleMouseMove = (e: MouseEvent) => {
-      if (isDraggingSV.current) handleSVMouse(e);
+    const handlePointerMove = (e: PointerEvent) => {
+      if (isDraggingSV.current) handleSVMouse(e as any);
     };
-    window.addEventListener('mouseup', handleMouseUp);
-    window.addEventListener('mousemove', handleMouseMove);
+    window.addEventListener('pointerup', handlePointerUp);
+    window.addEventListener('pointermove', handlePointerMove);
     return () => {
-      window.removeEventListener('mouseup', handleMouseUp);
-      window.removeEventListener('mousemove', handleMouseMove);
+      window.removeEventListener('pointerup', handlePointerUp);
+      window.removeEventListener('pointermove', handlePointerMove);
     };
   }, [handleSVMouse]);
 
@@ -136,11 +136,12 @@ export const ColorPicker: React.FC<ColorPickerProps> = ({
       {/* Saturation & Value Square */}
       <div 
         ref={svRef}
-        className="relative w-full aspect-square rounded-lg overflow-hidden cursor-crosshair border border-white/10"
+        className="relative w-full aspect-square rounded-lg overflow-hidden cursor-crosshair border border-white/10 touch-none"
         style={{ backgroundColor: baseHex }}
-        onMouseDown={(e) => {
+        onPointerDown={(e) => {
           isDraggingSV.current = true;
           handleSVMouse(e);
+          (e.target as HTMLElement).setPointerCapture(e.pointerId);
         }}
       >
         <div className="absolute inset-0 bg-gradient-to-r from-white to-transparent" />
@@ -160,17 +161,18 @@ export const ColorPicker: React.FC<ColorPickerProps> = ({
       {/* Hue Slider */}
       <div className="space-y-2">
         <div 
-          className="relative h-4 w-full rounded-full cursor-pointer border border-white/10 shadow-inner"
+          className="relative h-4 w-full rounded-full cursor-pointer border border-white/10 shadow-inner touch-none"
           style={{ background: hueBackground }}
-          onMouseDown={(e) => {
-             handleHueMouse(e);
-             const moveHandler = (me: MouseEvent) => handleHueMouse(me);
+          onPointerDown={(e) => {
+             handleHueMouse(e as any);
+             const moveHandler = (me: PointerEvent) => handleHueMouse(me as any);
              const upHandler = () => {
-               window.removeEventListener('mousemove', moveHandler);
-               window.removeEventListener('mouseup', upHandler);
+               window.removeEventListener('pointermove', moveHandler);
+               window.removeEventListener('pointerup', upHandler);
              };
-             window.addEventListener('mousemove', moveHandler);
-             window.addEventListener('mouseup', upHandler);
+             window.addEventListener('pointermove', moveHandler);
+             window.addEventListener('pointerup', upHandler);
+             (e.target as HTMLElement).setPointerCapture(e.pointerId);
           }}
         >
           {/* Hue Handle */}

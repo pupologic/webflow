@@ -166,7 +166,8 @@ export function useWebGLPaint(
     };
 
     setLayers(prev => {
-      const updated = [...prev, newLayer];
+      // Unshift to put the new layer at the top (index 0)
+      const updated = [newLayer, ...prev];
       if (!activeLayerId) setActiveLayerId(newLayer.id);
       return updated;
     });
@@ -378,7 +379,9 @@ export function useWebGLPaint(
     gl.setClearColor(0xffffff, 1); 
     gl.clear();
 
-    for (const layer of layers) {
+    // Render layers back-to-front (as index 0 is visually the top layer in UI)
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const layer = layers[i];
       if (!layer.visible) continue;
       
       let mat = state.compositeMaterials.get(layer.id);
@@ -398,7 +401,7 @@ export function useWebGLPaint(
         mat.blending = layer.blendMode;
       }
 
-        state.compositeQuad.material = mat;
+      state.compositeQuad.material = mat;
       gl.render(state.compositeScene, state.compositeCamera);
     }
     
