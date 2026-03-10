@@ -65,7 +65,10 @@ export function useWebGLPaint(
     lastPressure: 1.0,
     previewCanvas: document.createElement('canvas'),
     previewContext: null as CanvasRenderingContext2D | null,
+    previewTarget: null as THREE.WebGLRenderTarget | null,
+    previewBlitMaterial: null as THREE.MeshBasicMaterial | null,
     lastSyncTime: 0,
+    staggerStep: 0, // 0: Idle, 1: Full Dilation, 2: Sync Preview
   });
 
   const undoStackRef = useRef<{ layerId: string; target: THREE.WebGLRenderTarget }[]>([]);
@@ -95,7 +98,13 @@ export function useWebGLPaint(
 
     state.previewCanvas.width = 512; // Sufficient for UI preview
     state.previewCanvas.height = 512;
-    state.previewContext = state.previewCanvas.getContext('2d');
+    state.previewContext = state.previewCanvas.getContext('2d', { willReadFrequently: true });
+
+    if (state.previewTarget) state.previewTarget.dispose();
+    state.previewTarget = new THREE.WebGLRenderTarget(512, 512, targetOpts);
+    
+    if (state.previewBlitMaterial) state.previewBlitMaterial.dispose();
+    state.previewBlitMaterial = new THREE.MeshBasicMaterial({ transparent: false, depthTest: false, depthWrite: false });
 
     addLayer('Base Layer');
     state.needsUVMaskUpdate = true;
@@ -124,7 +133,8 @@ export function useWebGLPaint(
     return layers.find(l => l.id === activeLayerId);
   }, [layers, activeLayerId]);
 
-  const addLayer = useCallback((name = 'New Layer') => {
+  const addLayer = useCallback((nameArg: any = 'New Layer') => {
+    const name = (typeof nameArg === 'string') ? nameArg : 'New Layer';
     const state = stateRef.current;
     const newTarget = new THREE.WebGLRenderTarget(state.textureSize, state.textureSize, {
       minFilter: THREE.LinearFilter,
@@ -291,49 +301,43 @@ export function useWebGLPaint(
 
   const stopPainting = useCallback(() => {
     stateRef.current.isPainting = false;
-    stateRef.current.needsComposite = true; // Force final composite with full 16px dilation
+    stateRef.current.staggerStep = 1; // Start post-stroke cleanup staggered
+    stateRef.current.needsComposite = true;
   }, []);
 
   const syncPreviewCanvas = useCallback(() => {
     const state = stateRef.current;
-    if (!state.previewContext || !state.dilatedTarget) return;
+    if (!state.previewContext || !state.dilatedTarget || !state.previewTarget || !state.previewBlitMaterial) return;
 
     const size = 512;
-    const tempRT = new THREE.WebGLRenderTarget(size, size);
-    
     const renderer = gl;
     const oldRT = renderer.getRenderTarget();
     
-    // Blit dilated target to small temp target
-    renderer.setRenderTarget(tempRT);
-    const blitMat = new THREE.MeshBasicMaterial({ map: state.dilatedTarget.texture, depthTest: false, depthWrite: false });
-    state.compositeQuad.material = blitMat;
+    // Use pooled resources
+    renderer.setRenderTarget(state.previewTarget);
+    state.previewBlitMaterial.map = state.dilatedTarget.texture;
+    state.compositeQuad.material = state.previewBlitMaterial;
     renderer.render(state.compositeScene, state.compositeCamera);
     
-    // Read pixels
+    // Read pixels (Expensive!)
     const pixelBuffer = new Uint8Array(size * size * 4);
-    gl.readRenderTargetPixels(tempRT, 0, 0, size, size, pixelBuffer);
+    gl.readRenderTargetPixels(state.previewTarget, 0, 0, size, size, pixelBuffer);
     
-    // Put to canvas
     const imageData = new ImageData(new Uint8ClampedArray(pixelBuffer), size, size);
     state.previewContext.putImageData(imageData, 0, 0);
 
-    // Flip Y (WebGL is bottom-up)
-    const flipCanvas = document.createElement('canvas');
-    flipCanvas.width = size;
-    flipCanvas.height = size;
-    const flipCtx = flipCanvas.getContext('2d')!;
-    flipCtx.scale(1, -1);
-    flipCtx.drawImage(state.previewCanvas, 0, -size);
-    state.previewContext.drawImage(flipCanvas, 0, 0);
+    // Efficient flip Y on 2D context
+    const canvas = state.previewCanvas;
+    const ctx = state.previewContext;
+    ctx.save();
+    ctx.globalCompositeOperation = 'copy';
+    ctx.scale(1, -1);
+    ctx.drawImage(canvas, 0, -size);
+    ctx.restore();
 
     renderer.setRenderTarget(oldRT);
-    tempRT.dispose();
-    blitMat.dispose();
     
-    // Trigger a fake "update" for components listening to the canvas
-    (state.previewCanvas as any).version = (state.previewCanvas as any).version || 0;
-    (state.previewCanvas as any).version++;
+    (state.previewCanvas as any).version = ((state.previewCanvas as any).version || 0) + 1;
   }, [gl]);
 
   // ---- RAF Compositor ----
@@ -397,33 +401,40 @@ export function useWebGLPaint(
       gl.setRenderTarget(state.dilatedTarget);
       gl.setClearColor(0x000000, 0);
       gl.clear();
-      const currentRadius = state.isPainting ? 2.0 : 16.0;
+      
+      // Use low radius during painting, full radius during idle or stagger step 1
+      const isFinalizing = state.staggerStep === 1;
+      const currentRadius = (state.isPainting) ? 2.0 : 16.0;
+      
       state.dilationMaterial.setMap(state.compositeTarget.texture, state.uvMaskTarget.texture, state.textureSize, state.textureSize, currentRadius);
       state.compositeQuad.material = state.dilationMaterial;
       gl.render(state.compositeScene, state.compositeCamera);
+      
+      if (isFinalizing) state.staggerStep = 2; // Move to next stagger step
     }
     
-    gl.setRenderTarget(null); // Set render target back to canvas
+    gl.setRenderTarget(null);
     state.needsComposite = false;
     
-    // Sync preview canvas after compositing, ONLY when we finish painting
-    // gl.readRenderTargetPixels() is a GPU pipeline sinkhole block and kills FPS if run continuously!
-    if (!state.isPainting) {
-      syncPreviewCanvas();
-    }
-  }, [gl, layers, syncPreviewCanvas]);
+    // We handle SyncPreview separately in the loop for staggering
+  }, [gl, layers]);
 
   useEffect(() => {
     let animId: number;
     const loop = () => {
-      if (stateRef.current.needsComposite) {
+      const state = stateRef.current;
+      if (state.needsComposite) {
         compositeAllLayers();
+      } else if (state.staggerStep === 2) {
+        // Run sync on a separate frame after dilation to prevent single-frame spikes
+        syncPreviewCanvas();
+        state.staggerStep = 0;
       }
       animId = requestAnimationFrame(loop);
     };
     loop();
     return () => cancelAnimationFrame(animId);
-  }, [compositeAllLayers]);
+  }, [compositeAllLayers, syncPreviewCanvas]);
 
   // Sync geometry UV masks when parts change
   useEffect(() => {
