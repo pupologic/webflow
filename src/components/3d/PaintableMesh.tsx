@@ -58,7 +58,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
   
   const { 
     initPaintCanvas, startPainting, paint, stopPainting, textureSize,
-    layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, undo, redo
+    layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, fillCanvas, undo, redo
   } = use3DPaint(
     meshRef,
     brushSettings
@@ -66,9 +66,9 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
 
   useEffect(() => {
     if (onLayerControlsReady) {
-      onLayerControlsReady({ layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, undo, redo });
+      onLayerControlsReady({ layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, fillCanvas, undo, redo });
     }
-  }, [layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, undo, redo, onLayerControlsReady]);
+  }, [layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, fillCanvas, undo, redo, onLayerControlsReady]);
 
   const [activeTexture, setActiveTexture] = useState<THREE.CanvasTexture | null>(null);
 
