@@ -15,9 +15,18 @@ import { Slider } from '@/components/ui/slider';
 import { Toaster, toast } from 'sonner';
 import { UVOverlayPanel } from '@/components/ui-custom/UVOverlayPanel';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
-import { mergeVertices } from 'three/examples/jsm/utils/BufferGeometryUtils.js';
 import suzanneObjStr from '@/models/Suzanne.obj?raw';
 import './App.css';
+
+export interface ModelPart {
+  id: string;
+  name: string;
+  geometry: THREE.BufferGeometry;
+  visible: boolean;
+  position: [number, number, number];
+  rotation: [number, number, number];
+  scale: [number, number, number];
+}
 
 function App() {
   const [brushSettings, setBrushSettings] = useState<BrushSettings>({
@@ -27,14 +36,17 @@ function App() {
     hardness: 0.8,
     type: 'circle',
     mode: 'paint',
+    spacing: 0.25,
   });
 
   const [modelName, setModelName] = useState<string>('Suzanne');
+  const [modelParts, setModelParts] = useState<ModelPart[]>([]);
+  const [activePartId, setActivePartId] = useState<string | null>(null);
+
   const [showUVPanel, setShowUVPanel] = useState<boolean>(false);
   const [uvPanelWidth, setUvPanelWidth] = useState<number>(50); // percent
   const isDraggingDividerRef = useRef<boolean>(false);
   const containerRef = useRef<HTMLDivElement>(null);
-  const [customGeometry, setCustomGeometry] = useState<THREE.BufferGeometry | null>(null);
   const [showGrid, setShowGrid] = useState(true);
   const [showWireframe, setShowWireframe] = useState(false);
   const [flatShading, setFlatShading] = useState(false);
@@ -61,35 +73,29 @@ function App() {
     try {
       const loader = new OBJLoader();
       const object = loader.parse(suzanneObjStr);
-      let geometry: THREE.BufferGeometry | null = null;
+      const parts: ModelPart[] = [];
       
       object.traverse((child) => {
         if (child instanceof THREE.Mesh) {
-          if (!geometry) {
-            geometry = child.geometry;
+          const geom = child.geometry as THREE.BufferGeometry;
+          if (!geom.attributes.normal) {
+            geom.computeVertexNormals();
           }
+          parts.push({
+            id: THREE.MathUtils.generateUUID(),
+            name: child.name || `Part ${parts.length + 1}`,
+            geometry: geom,
+            visible: true,
+            position: [0, 0, 0],
+            rotation: [0, 0, 0],
+            scale: [1, 1, 1],
+          });
         }
       });
 
-      if (geometry) {
-        const geom = geometry as THREE.BufferGeometry;
-
-        // Only merge + recompute normals if the OBJ has NO normals attribute.
-        // Blender exports correct smooth normals — mergeVertices() and
-        // computeVertexNormals() would destroy them, causing shading artifacts.
-        if (!geom.attributes.normal) {
-          let mergedGeometry = geom;
-          try {
-            mergedGeometry = mergeVertices(geom);
-          } catch (e) {
-            console.warn('Failed to merge vertices', e);
-          }
-          mergedGeometry.computeVertexNormals();
-          setCustomGeometry(mergedGeometry);
-        } else {
-          // OBJ already has normals (Blender Shade Smooth) — use as-is
-          setCustomGeometry(geom);
-        }
+      if (parts.length > 0) {
+        setModelParts(parts);
+        setActivePartId(parts[0].id);
       }
     } catch (err) {
       console.error('Failed to parse Suzanne.obj', err);
@@ -163,6 +169,29 @@ function App() {
     }
   }, [layerControls, brushSettings.color]);
 
+  const handleSetActivePart = useCallback((id: string) => {
+    setActivePartId(id);
+  }, []);
+
+  const handleTogglePartVisibility = useCallback((id: string) => {
+    setModelParts((prev) => 
+      prev.map(part => part.id === id ? { ...part, visible: !part.visible } : part)
+    );
+  }, []);
+
+  const handleUpdatePartTransform = useCallback((id: string, transformType: 'position' | 'rotation' | 'scale', axis: 0 | 1 | 2, value: number) => {
+    setModelParts((prev) => 
+      prev.map(part => {
+        if (part.id === id) {
+          const newTransform = [...part[transformType]] as [number, number, number];
+          newTransform[axis] = value;
+          return { ...part, [transformType]: newTransform };
+        }
+        return part;
+      })
+    );
+  }, []);
+
   const handleObjUpload = useCallback((file: File) => {
     const reader = new FileReader();
     reader.onload = (e) => {
@@ -170,25 +199,29 @@ function App() {
       const loader = new OBJLoader();
       try {
         const object = loader.parse(contents);
-        let geometry: THREE.BufferGeometry | null = null;
+        const parts: ModelPart[] = [];
         
         object.traverse((child) => {
           if (child instanceof THREE.Mesh) {
-            if (!geometry) {
-              geometry = child.geometry;
+            const geom = child.geometry as THREE.BufferGeometry;
+            if (!geom.attributes.normal) {
+              geom.computeVertexNormals();
             }
+            parts.push({
+              id: THREE.MathUtils.generateUUID(),
+              name: child.name || `Part ${parts.length + 1}`,
+              geometry: geom,
+              visible: true,
+              position: [0, 0, 0],
+              rotation: [0, 0, 0],
+              scale: [1, 1, 1],
+            });
           }
         });
 
-        if (geometry) {
-          let mergedGeometry: THREE.BufferGeometry = geometry as THREE.BufferGeometry;
-          try {
-            mergedGeometry = mergeVertices(geometry as THREE.BufferGeometry);
-          } catch (e) {
-            console.warn('Failed to merge vertices', e);
-          }
-          mergedGeometry.computeVertexNormals();
-          setCustomGeometry(mergedGeometry);
+        if (parts.length > 0) {
+          setModelParts(parts);
+          setActivePartId(parts[0].id);
           setModelName(file.name.replace(/\.obj$/i, ''));
           toast.success('Modelo OBJ carregado com sucesso!');
         } else {
@@ -232,6 +265,11 @@ function App() {
                   setShowWireframe={setShowWireframe}
                   flatShading={flatShading}
                   setFlatShading={setFlatShading}
+                  modelParts={modelParts}
+                  activePartId={activePartId}
+                  onSetActivePart={handleSetActivePart}
+                  onTogglePartVisibility={handleTogglePartVisibility}
+                  onUpdatePartTransform={handleUpdatePartTransform}
                 />
               </PopoverContent>
             </Popover>
@@ -415,7 +453,8 @@ function App() {
             >
               <Scene3D
                 brushSettings={brushSettings}
-                customGeometry={customGeometry}
+                modelParts={modelParts}
+                activePartId={activePartId}
                 showGrid={showGrid}
                 showWireframe={showWireframe}
                 flatShading={flatShading}
@@ -474,7 +513,7 @@ function App() {
                 display: showUVPanel ? 'block' : 'none',
               }}
             >
-              <UVOverlayPanel texture={currentTexture} previewCanvas={previewCanvas} geometry={customGeometry} />
+              <UVOverlayPanel texture={currentTexture} previewCanvas={previewCanvas} geometry={modelParts.find(p => p.id === activePartId)?.geometry || null} />
             </div>
           </div>
         </main>

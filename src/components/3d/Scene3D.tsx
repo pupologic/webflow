@@ -7,7 +7,8 @@ import type { BrushSettings } from '@/hooks/useWebGLPaint';
 
 interface Scene3DProps {
   brushSettings: BrushSettings;
-  customGeometry?: THREE.BufferGeometry | null;
+  modelParts: any[];
+  activePartId: string | null;
   showGrid?: boolean;
   showWireframe?: boolean;
   flatShading?: boolean;
@@ -56,7 +57,8 @@ const EnvRotator = ({ envRotation }: { envRotation: number }) => {
 
 export const Scene3D: React.FC<Scene3DProps> = ({
   brushSettings,
-  customGeometry,
+  modelParts,
+  activePartId,
   showGrid = true,
   showWireframe = false,
   flatShading = false,
@@ -141,7 +143,8 @@ export const Scene3D: React.FC<Scene3DProps> = ({
         {/* Paintable Mesh */}
         <PaintableMesh
           brushSettings={brushSettings}
-          customGeometry={customGeometry}
+          modelParts={modelParts}
+          activePartId={activePartId}
           onTextureChange={handleTextureChange}
           showWireframe={showWireframe}
           flatShading={flatShading}

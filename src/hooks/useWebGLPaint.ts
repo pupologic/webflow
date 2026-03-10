@@ -11,6 +11,7 @@ export type BrushSettings = {
   hardness: number;
   type: 'circle' | 'square' | 'texture';
   mode: 'paint' | 'erase';
+  spacing: number;
 };
 
 export interface GPULayer {
@@ -231,7 +232,10 @@ export function useWebGLPaint(
     const distance = state.lastHitPoint.distanceTo(currentPoint);
     
     // Convert screen brush size approx to world step
-    const stepDist = Math.max(0.005, (brushSettings.size * 0.002) * 0.25);
+    // spacing of 0.1 means stamps every 10% of brush size radius
+    // spacing of 1.0 means stamps exactly tangent
+    const worldRadius = brushSettings.size * 0.002;
+    const stepDist = Math.max(0.001, worldRadius * brushSettings.spacing);
     const steps = Math.ceil(distance / stepDist);
     
     // Interpolate in 3D space

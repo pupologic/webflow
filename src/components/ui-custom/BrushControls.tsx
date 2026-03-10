@@ -90,6 +90,24 @@ export const BrushControls: React.FC<BrushControlsProps> = ({
         />
       </div>
 
+      {/* Brush Spacing */}
+      <div className="space-y-4 pt-4 border-t border-white/10">
+        <div className="flex justify-between items-center px-1">
+          <span className="text-sm font-medium text-zinc-300">Spacing</span>
+          <span className="text-sm text-zinc-500 w-12 text-right">
+            {(brushSettings.spacing * 100).toFixed(0)}%
+          </span>
+        </div>
+        <Slider
+          value={[brushSettings.spacing]}
+          onValueChange={(val) => onBrushSettingsChange({ ...brushSettings, spacing: val[0] })}
+          min={0.01}
+          max={2}
+          step={0.01}
+          className="w-full"
+        />
+      </div>
+
       {/* Brush Preview */}
       <div className="mt-4 pt-4 border-t border-white/5">
         <Label className="text-zinc-400 text-xs tracking-wide mb-3 block">PREVIEW</Label>

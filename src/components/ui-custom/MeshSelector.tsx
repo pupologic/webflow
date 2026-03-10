@@ -11,6 +11,11 @@ interface MeshSelectorProps {
   setShowWireframe?: (show: boolean) => void;
   flatShading?: boolean;
   setFlatShading?: (flat: boolean) => void;
+  modelParts?: any[];
+  activePartId?: string | null;
+  onSetActivePart?: (id: string) => void;
+  onTogglePartVisibility?: (id: string) => void;
+  onUpdatePartTransform?: (id: string, transformType: 'position' | 'rotation' | 'scale', axis: 0 | 1 | 2, value: number) => void;
 }
 
 export const MeshSelector: React.FC<MeshSelectorProps> = ({
@@ -21,6 +26,11 @@ export const MeshSelector: React.FC<MeshSelectorProps> = ({
   setShowWireframe,
   flatShading = false,
   setFlatShading,
+  modelParts = [],
+  activePartId,
+  onSetActivePart,
+  onTogglePartVisibility,
+  onUpdatePartTransform,
 }) => {
   const fileInputRef = React.useRef<HTMLInputElement>(null);
 
@@ -76,6 +86,103 @@ export const MeshSelector: React.FC<MeshSelectorProps> = ({
               <Box className="w-3.5 h-3.5" />
               Flat
             </label>
+          </div>
+        </div>
+      )}
+
+      {modelParts.length > 0 && (
+        <div className="space-y-4 pt-4 border-t border-white/10">
+          <h4 className="text-zinc-400 text-xs tracking-wide">MODEL PARTS</h4>
+          <div className="space-y-2 max-h-40 overflow-y-auto pr-2 custom-scrollbar">
+            {modelParts.map((part) => (
+              <div 
+                key={part.id} 
+                className={`p-2 rounded-lg border flex flex-col gap-2 transition-colors ${
+                  activePartId === part.id ? 'bg-zinc-800 border-zinc-500' : 'bg-zinc-900 border-white/10 hover:border-white/20'
+                }`}
+              >
+                <div className="flex items-center justify-between">
+                  <div 
+                    className="flex items-center gap-2 flex-1 cursor-pointer"
+                    onClick={() => onSetActivePart?.(part.id)}
+                  >
+                    <input 
+                      type="radio" 
+                      readOnly 
+                      checked={activePartId === part.id}
+                      className="accent-zinc-400 w-3 h-3"
+                    />
+                    <span className="text-xs text-zinc-300 truncate w-32" title={part.name}>{part.name}</span>
+                  </div>
+                  <input 
+                    type="checkbox" 
+                    checked={part.visible}
+                    onChange={() => onTogglePartVisibility?.(part.id)}
+                    className="accent-zinc-500 w-3.5 h-3.5"
+                    title="Toggle Visibility"
+                  />
+                </div>
+
+                {activePartId === part.id && onUpdatePartTransform && (
+                  <div className="pl-5 space-y-3 pt-2 border-t border-white/5 mt-1">
+                    {/* Position */}
+                    <div className="space-y-1.5">
+                      <span className="text-[10px] text-zinc-500 font-medium">Position</span>
+                      <div className="grid grid-cols-3 gap-1">
+                        {['X', 'Y', 'Z'].map((axisLabel, i) => (
+                          <div key={`pos-${i}`} className="relative flex items-center">
+                            <span className="absolute left-1.5 text-[9px] text-zinc-600 font-mono">{axisLabel}</span>
+                            <Input 
+                              type="number" 
+                              step="0.1"
+                              value={part.position[i]}
+                              onChange={(e) => onUpdatePartTransform(part.id, 'position', i as 0|1|2, parseFloat(e.target.value) || 0)}
+                              className="h-6 text-[10px] pl-4 pr-1 bg-black/40 border-white/10 focus-visible:ring-1 focus-visible:ring-zinc-600 font-mono"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    {/* Rotation */}
+                    <div className="space-y-1.5">
+                      <span className="text-[10px] text-zinc-500 font-medium">Rotation</span>
+                      <div className="grid grid-cols-3 gap-1">
+                        {['X', 'Y', 'Z'].map((axisLabel, i) => (
+                          <div key={`rot-${i}`} className="relative flex items-center">
+                            <span className="absolute left-1.5 text-[9px] text-zinc-600 font-mono">{axisLabel}</span>
+                            <Input 
+                              type="number" 
+                              step="0.1"
+                              value={part.rotation[i]}
+                              onChange={(e) => onUpdatePartTransform(part.id, 'rotation', i as 0|1|2, parseFloat(e.target.value) || 0)}
+                              className="h-6 text-[10px] pl-4 pr-1 bg-black/40 border-white/10 focus-visible:ring-1 focus-visible:ring-zinc-600 font-mono"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                    {/* Scale */}
+                    <div className="space-y-1.5">
+                      <span className="text-[10px] text-zinc-500 font-medium">Scale</span>
+                      <div className="grid grid-cols-3 gap-1">
+                        {['X', 'Y', 'Z'].map((axisLabel, i) => (
+                          <div key={`scl-${i}`} className="relative flex items-center">
+                            <span className="absolute left-1.5 text-[9px] text-zinc-600 font-mono">{axisLabel}</span>
+                            <Input 
+                              type="number" 
+                              step="0.1"
+                              value={part.scale[i]}
+                              onChange={(e) => onUpdatePartTransform(part.id, 'scale', i as 0|1|2, parseFloat(e.target.value) || 0)}
+                              className="h-6 text-[10px] pl-4 pr-1 bg-black/40 border-white/10 focus-visible:ring-1 focus-visible:ring-zinc-600 font-mono"
+                            />
+                          </div>
+                        ))}
+                      </div>
+                    </div>
+                  </div>
+                )}
+              </div>
+            ))}
           </div>
         </div>
       )}

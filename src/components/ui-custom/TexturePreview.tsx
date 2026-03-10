@@ -73,17 +73,6 @@ export const TexturePreview: React.FC<TexturePreviewProps> = ({
         </select>
       </div>
       
-      {/* Texture Preview Canvas */}
-      <div className="bg-zinc-900/40 rounded-xl p-2 border border-white/5">
-        <canvas
-          ref={canvasRef}
-          width={256}
-          height={256}
-          className="w-full h-auto rounded-lg border border-white/10 seamless-checkerboard"
-          style={{ imageRendering: 'pixelated' }}
-        />
-      </div>
-
       {/* Action Buttons */}
       <div className="grid grid-cols-3 gap-2">
         <Button

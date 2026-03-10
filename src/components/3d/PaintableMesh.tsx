@@ -22,7 +22,8 @@ const MATCAPS_URLS: Record<string, string> = {
 
 interface PaintableMeshProps {
   brushSettings: BrushSettings;
-  customGeometry?: THREE.BufferGeometry | null;
+  modelParts: any[];
+  activePartId: string | null;
   onTextureChange?: (texture: THREE.Texture | null, previewCanvas?: HTMLCanvasElement) => void;
   showWireframe?: boolean;
   flatShading?: boolean;
@@ -37,7 +38,8 @@ interface PaintableMeshProps {
 
 export const PaintableMesh: React.FC<PaintableMeshProps> = ({
   brushSettings,
-  customGeometry,
+  modelParts,
+  activePartId,
   onTextureChange,
   showWireframe = false,
   flatShading = false,
@@ -50,7 +52,6 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
   onLayerControlsReady,
 }) => {
   const meshRef = useRef<THREE.Mesh>(null);
-  const wireframeRef = useRef<THREE.Mesh>(null);
   const { camera, gl } = useThree();
   const raycaster = useRef(new THREE.Raycaster());
   const mouse = useRef(new THREE.Vector2());
@@ -233,29 +234,75 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
 
   return (
     <group>
-      {/* Main paintable mesh */}
-      <mesh
-        ref={meshRef}
-        geometry={customGeometry || undefined}
-        onPointerDown={handlePointerDown}
-        onPointerMove={handlePointerMove}
-        onPointerUp={handlePointerUp}
-        onPointerLeave={handlePointerLeave}
-      >
-        {!customGeometry && <sphereGeometry args={[2, 128, 128]} />}
-      </mesh>
+      {/* Main paintable meshes */}
+      {modelParts.length > 0 ? (
+        modelParts.map((part) => {
+          const isActive = part.id === activePartId;
+          if (!part.visible) return null;
 
-      {/* Wireframe overlay */}
-      {showWireframe && (
-        <mesh ref={wireframeRef} geometry={customGeometry || undefined}>
-          {!customGeometry && <sphereGeometry args={[2, 128, 128]} />}
-          <meshBasicMaterial
-            color="#00ff00"
-            wireframe
-            transparent
-            opacity={0.3}
-          />
-        </mesh>
+          return (
+            <group
+               key={part.id}
+               position={part.position}
+               rotation={part.rotation}
+               scale={part.scale}
+            >
+              <mesh
+                ref={isActive ? meshRef : undefined}
+                geometry={part.geometry}
+                onPointerDown={isActive ? handlePointerDown : undefined}
+                onPointerMove={isActive ? handlePointerMove : undefined}
+                onPointerUp={isActive ? handlePointerUp : undefined}
+                onPointerLeave={isActive ? handlePointerLeave : undefined}
+                // Only the active part uses the paintable material, others use standard with vertex colors or default material
+                // We'll let the existing useEffect over meshRef handle the active material.
+                // For inactive parts, we just render them with a basic material or the matcap (without the paint texture overlay)
+              >
+                {isActive ? null : (
+                    matcapName && matcapTexture ? (
+                        <meshMatcapMaterial matcap={matcapTexture} flatShading={flatShading} color={objectColor} />
+                    ) : (
+                        <meshStandardMaterial roughness={roughness} metalness={metalness} flatShading={flatShading} color={objectColor} />
+                    )
+                )}
+              </mesh>
+              {showWireframe && (
+                <mesh geometry={part.geometry}>
+                  <meshBasicMaterial
+                    color="#00ff00"
+                    wireframe
+                    transparent
+                    opacity={0.3}
+                    depthTest={false}
+                  />
+                </mesh>
+              )}
+            </group>
+          );
+        })
+      ) : (
+        <group>
+          <mesh
+            ref={meshRef}
+            onPointerDown={handlePointerDown}
+            onPointerMove={handlePointerMove}
+            onPointerUp={handlePointerUp}
+            onPointerLeave={handlePointerLeave}
+          >
+            <sphereGeometry args={[2, 128, 128]} />
+          </mesh>
+          {showWireframe && (
+            <mesh>
+              <sphereGeometry args={[2, 128, 128]} />
+              <meshBasicMaterial
+                color="#00ff00"
+                wireframe
+                transparent
+                opacity={0.3}
+              />
+            </mesh>
+          )}
+        </group>
       )}
 
       {/* Brush Cursor Indicator */}
