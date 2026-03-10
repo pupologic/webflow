@@ -436,6 +436,21 @@ export function useWebGLPaint(
     return () => cancelAnimationFrame(animId);
   }, [compositeAllLayers, syncPreviewCanvas]);
 
+  useEffect(() => {
+    return () => {
+      const state = stateRef.current;
+      state.compositeTarget?.dispose();
+      state.dilatedTarget?.dispose();
+      state.uvMaskTarget?.dispose();
+      state.previewTarget?.dispose();
+      state.brushMaterial.dispose();
+      state.uvMaskMaterial.dispose();
+      state.dilationMaterial.dispose();
+      state.previewBlitMaterial?.dispose();
+      state.compositeMaterials.forEach(m => m.dispose());
+    };
+  }, []);
+
   // Sync geometry UV masks when parts change
   useEffect(() => {
     stateRef.current.needsUVMaskUpdate = true;

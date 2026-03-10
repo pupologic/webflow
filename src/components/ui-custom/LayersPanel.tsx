@@ -7,7 +7,7 @@ import { Slider } from '@/components/ui/slider';
 interface LayerControls {
   layers: GPULayer[];
   activeLayerId: string | null;
-  addLayer: () => void;
+  addLayer: (name?: string) => void;
   removeLayer: (id: string) => void;
   updateLayer: (id: string, updates: Partial<GPULayer>) => void;
   setLayerActive: (id: string) => void;
@@ -66,7 +66,7 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({ layerControls }) => {
           Layers
         </h3>
         <button
-          onClick={addLayer}
+          onClick={() => addLayer('New Layer')}
           className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-white"
           title="Add Layer"
         >

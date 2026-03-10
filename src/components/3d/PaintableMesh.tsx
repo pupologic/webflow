@@ -185,6 +185,14 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
       }
       
       const nativeEvent = event.nativeEvent as PointerEvent;
+
+      // Skip cursor updates if we are using right/middle mouse buttons (Orbiting/Panning)
+      // buttons > 1 means secondary buttons are pressed
+      if (nativeEvent.pointerType === 'mouse' && nativeEvent.buttons > 1) {
+        setCursor(null);
+        return;
+      }
+
       let pressure = nativeEvent.pointerType === 'pen' ? nativeEvent.pressure : 1.0;
       if (pressure === 0 && nativeEvent.pointerType !== 'pen') pressure = 1.0;
       
