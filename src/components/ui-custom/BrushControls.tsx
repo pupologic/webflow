@@ -1,6 +1,5 @@
 import React from 'react';
 import { Slider } from '@/components/ui/slider';
-import { Label } from '@/components/ui/label';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Circle, Square } from 'lucide-react';
 import type { BrushSettings } from '@/hooks/useWebGLPaint';
