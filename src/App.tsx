@@ -39,7 +39,8 @@ function App() {
   const [showWireframe, setShowWireframe] = useState(false);
   const [flatShading, setFlatShading] = useState(false);
   const [textureResolution, setTextureResolution] = useState<number>(2048);
-  const [currentTexture, setCurrentTexture] = useState<THREE.CanvasTexture | null>(null);
+  const [currentTexture, setCurrentTexture] = useState<THREE.Texture | null>(null);
+  const [previewCanvas, setPreviewCanvas] = useState<HTMLCanvasElement | null>(null);
   const [layerControls, setLayerControls] = useState<any>(null);
   
   // Environment controls
@@ -95,22 +96,24 @@ function App() {
     }
   }, []);
 
-  const handleTextureChange = useCallback((texture: THREE.CanvasTexture | null) => {
+  const handleTextureChange = useCallback((texture: THREE.Texture | null, canvas?: HTMLCanvasElement) => {
     setCurrentTexture(texture);
-    textureRef.current = texture;
+    if (canvas) setPreviewCanvas(canvas);
   }, []);
 
-  const handleExport = useCallback(() => {
-    if (textureRef.current && textureRef.current.image) {
-      const canvas = textureRef.current.image as HTMLCanvasElement;
-      const link = document.createElement('a');
-      link.download = 'texture-paint.png';
-      link.href = canvas.toDataURL('image/png');
-      link.click();
-      } else {
+  const handleExport = useCallback(async () => {
+    if (layerControls?.exportTexture) {
+      const dataUrl = layerControls.exportTexture('png');
+      if (dataUrl) {
+        const link = document.createElement('a');
+        link.download = 'texture-paint.png';
+        link.href = dataUrl;
+        link.click();
+      }
+    } else {
       toast.error('Nenhuma textura para exportar');
     }
-  }, []);
+  }, [layerControls]);
 
   const handleImport = useCallback((file: File) => {
     const reader = new FileReader();
@@ -239,13 +242,14 @@ function App() {
               </PopoverTrigger>
               <PopoverContent className="w-80 bg-[#121214] border-white/10 p-5 mt-2" align="start">
                 <TexturePreview 
-                  texture={currentTexture} 
-                  onClear={handleClear} 
-                  onExport={handleExport} 
-                  onImport={handleImport}
-                  resolution={textureResolution}
-                  onResolutionChange={setTextureResolution}
-                />
+                texture={currentTexture}
+                previewCanvas={previewCanvas}
+                onExport={handleExport}
+                onClear={handleClear}
+                onImport={handleImport}
+                resolution={textureResolution}
+                onResolutionChange={setTextureResolution}
+              />
               </PopoverContent>
             </Popover>
           </div>
@@ -470,7 +474,7 @@ function App() {
                 display: showUVPanel ? 'block' : 'none',
               }}
             >
-              <UVOverlayPanel texture={currentTexture} geometry={customGeometry} />
+              <UVOverlayPanel texture={currentTexture} previewCanvas={previewCanvas} geometry={customGeometry} />
             </div>
           </div>
         </main>

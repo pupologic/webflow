@@ -23,7 +23,7 @@ const MATCAPS_URLS: Record<string, string> = {
 interface PaintableMeshProps {
   brushSettings: BrushSettings;
   customGeometry?: THREE.BufferGeometry | null;
-  onTextureChange?: (texture: THREE.CanvasTexture | null) => void;
+  onTextureChange?: (texture: THREE.Texture | null, previewCanvas?: HTMLCanvasElement) => void;
   showWireframe?: boolean;
   flatShading?: boolean;
   textureResolution?: number;
@@ -61,6 +61,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
   const { 
     initPaintSystem, startPainting, paint, stopPainting,
     texture,
+    previewCanvas,
     layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, fillCanvas, undo, redo, exportTexture
   } = useWebGLPaint(
     meshRef,
@@ -80,9 +81,9 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
 
   useEffect(() => {
     if (texture && onTextureChange) {
-      onTextureChange(texture as any);
+      onTextureChange(texture, previewCanvas);
     }
-  }, [texture, onTextureChange]);
+  }, [texture, previewCanvas, onTextureChange]);
 
   const [matcapTexture, setMatcapTexture] = useState<THREE.Texture | null>(null);
 

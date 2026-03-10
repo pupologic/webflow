@@ -22,7 +22,7 @@ interface Scene3DProps {
   envIntensity?: number;
   envRotation?: number;
   backgroundColor?: string;
-  onTextureChange?: (texture: THREE.CanvasTexture | null) => void;
+  onTextureChange?: (texture: THREE.Texture | null, previewCanvas?: HTMLCanvasElement) => void;
   onLayerControlsReady?: (controls: any) => void;
 }
 
@@ -86,9 +86,9 @@ export const Scene3D: React.FC<Scene3DProps> = ({
     }
   }, []);
 
-  const handleTextureChange = useCallback((texture: THREE.CanvasTexture | null) => {
+  const handleTextureChange = useCallback((texture: THREE.Texture | null, previewCanvas?: HTMLCanvasElement) => {
     if (onTextureChange) {
-      onTextureChange(texture);
+      onTextureChange(texture, previewCanvas);
     }
   }, [onTextureChange]);
 

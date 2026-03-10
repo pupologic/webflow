@@ -4,7 +4,8 @@ import { Button } from '@/components/ui/button';
 import { Download, Trash2, FolderOpen } from 'lucide-react';
 
 interface TexturePreviewProps {
-  texture: THREE.CanvasTexture | null;
+  texture: THREE.Texture | null;
+  previewCanvas: HTMLCanvasElement | null;
   onClear: () => void;
   onExport: () => void;
   onImport: (file: File) => void;
@@ -13,7 +14,7 @@ interface TexturePreviewProps {
 }
 
 export const TexturePreview: React.FC<TexturePreviewProps> = ({
-  texture,
+  previewCanvas,
   onClear,
   onExport,
   onImport,
@@ -24,27 +25,26 @@ export const TexturePreview: React.FC<TexturePreviewProps> = ({
   const fileInputRef = useRef<HTMLInputElement>(null);
 
   useEffect(() => {
-    if (canvasRef.current && texture) {
+    if (canvasRef.current && previewCanvas) {
       const canvas = canvasRef.current;
       const ctx = canvas.getContext('2d');
-      if (ctx && texture.image) {
+      if (ctx) {
         // Clear canvas
         ctx.fillStyle = '#333';
         ctx.fillRect(0, 0, canvas.width, canvas.height);
         
-        // Draw texture preview
-        const img = texture.image as HTMLCanvasElement;
+        // Draw texture preview from the provided preview canvas
         const scale = Math.min(
-          canvas.width / img.width,
-          canvas.height / img.height
+          canvas.width / previewCanvas.width,
+          canvas.height / previewCanvas.height
         );
-        const x = (canvas.width - img.width * scale) / 2;
-        const y = (canvas.height - img.height * scale) / 2;
+        const x = (canvas.width - previewCanvas.width * scale) / 2;
+        const y = (canvas.height - previewCanvas.height * scale) / 2;
         
-        ctx.drawImage(img, x, y, img.width * scale, img.height * scale);
+        ctx.drawImage(previewCanvas, x, y, previewCanvas.width * scale, previewCanvas.height * scale);
       }
     }
-  }, [texture]);
+  }, [previewCanvas]);
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     const file = e.target.files?.[0];

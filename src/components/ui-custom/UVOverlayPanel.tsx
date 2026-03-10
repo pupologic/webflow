@@ -4,13 +4,14 @@ import { Switch } from '@/components/ui/switch';
 import { Label } from '@/components/ui/label';
 
 interface UVOverlayPanelProps {
-  texture: THREE.CanvasTexture | null;
+  texture: THREE.Texture | null;
+  previewCanvas: HTMLCanvasElement | null;
   geometry: THREE.BufferGeometry | null;
 }
 
 const UV_CACHE_SIZE = 512;
 
-export const UVOverlayPanel: React.FC<UVOverlayPanelProps> = ({ texture, geometry }) => {
+export const UVOverlayPanel: React.FC<UVOverlayPanelProps> = ({ texture, previewCanvas, geometry }) => {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const containerRef = useRef<HTMLDivElement>(null);
   const [showUVs, setShowUVs] = useState(true);
@@ -19,11 +20,13 @@ export const UVOverlayPanel: React.FC<UVOverlayPanelProps> = ({ texture, geometr
   const showUVsRef = useRef(true);
   const textureRef = useRef<THREE.CanvasTexture | null>(null);
   const geometryRef = useRef<THREE.BufferGeometry | null>(null);
+  const previewCanvasRef = useRef<HTMLCanvasElement | null>(null);
   const uvCacheRef = useRef<HTMLCanvasElement | null>(null);
 
   // Sync props into refs every render so stale closures are never a problem
-  textureRef.current = texture;
+  textureRef.current = texture as any;
   geometryRef.current = geometry;
+  previewCanvasRef.current = previewCanvas;
 
   // ---------------------------------------------------------------------------
   // Build UV wireframe into a fixed-size offscreen canvas (done once per geometry)
@@ -96,14 +99,12 @@ export const UVOverlayPanel: React.FC<UVOverlayPanelProps> = ({ texture, geometr
     ctx.fillStyle = '#09090b';
     ctx.fillRect(0, 0, displayW, displayH);
 
-    const tex = textureRef.current;
     const padding = 16;
     let drawRect = { x: padding, y: padding, w: displayW - padding*2, h: displayH - padding*2 };
 
-    if (tex && tex.image) {
-      const img = tex.image as HTMLCanvasElement;
-      if (img.width > 0 && img.height > 0) {
-        const aspect = img.width / img.height;
+    const pCanvas = previewCanvasRef.current;
+    if (pCanvas) {
+        const aspect = pCanvas.width / pCanvas.height;
         const availW = displayW - padding*2;
         const availH = displayH - padding*2;
 
@@ -117,8 +118,7 @@ export const UVOverlayPanel: React.FC<UVOverlayPanelProps> = ({ texture, geometr
 
         ctx.imageSmoothingEnabled = true;
         ctx.imageSmoothingQuality = 'high';
-        ctx.drawImage(img, drawRect.x, drawRect.y, drawRect.w, drawRect.h);
-      }
+        ctx.drawImage(pCanvas, drawRect.x, drawRect.y, drawRect.w, drawRect.h);
     }
 
     if (showUVsRef.current && uvCacheRef.current) {

@@ -60,6 +60,9 @@ export function useWebGLPaint(
     compositeMaterials: new Map<string, THREE.MeshBasicMaterial>(),
 
     lastHitPoint: new THREE.Vector3(),
+    previewCanvas: document.createElement('canvas'),
+    previewContext: null as CanvasRenderingContext2D | null,
+    lastSyncTime: 0,
   });
 
   const undoStackRef = useRef<{ layerId: string; target: THREE.WebGLRenderTarget }[]>([]);
@@ -86,6 +89,10 @@ export function useWebGLPaint(
     state.decalMesh.material = state.brushMaterial;
     state.decalScene.add(state.decalMesh);
     state.compositeScene.add(state.compositeQuad);
+
+    state.previewCanvas.width = 512; // Sufficient for UI preview
+    state.previewCanvas.height = 512;
+    state.previewContext = state.previewCanvas.getContext('2d');
 
     addLayer('Base Layer');
   }, []);
@@ -240,6 +247,48 @@ export function useWebGLPaint(
     stateRef.current.isPainting = false;
   }, []);
 
+  const syncPreviewCanvas = useCallback(() => {
+    const state = stateRef.current;
+    if (!state.previewContext || !state.dilatedTarget) return;
+
+    const size = 512;
+    const tempRT = new THREE.WebGLRenderTarget(size, size);
+    
+    const renderer = gl;
+    const oldRT = renderer.getRenderTarget();
+    
+    // Blit dilated target to small temp target
+    renderer.setRenderTarget(tempRT);
+    const blitMat = new THREE.MeshBasicMaterial({ map: state.dilatedTarget.texture, depthTest: false, depthWrite: false });
+    state.compositeQuad.material = blitMat;
+    renderer.render(state.compositeScene, state.compositeCamera);
+    
+    // Read pixels
+    const pixelBuffer = new Uint8Array(size * size * 4);
+    gl.readRenderTargetPixels(tempRT, 0, 0, size, size, pixelBuffer);
+    
+    // Put to canvas
+    const imageData = new ImageData(new Uint8ClampedArray(pixelBuffer), size, size);
+    state.previewContext.putImageData(imageData, 0, 0);
+
+    // Flip Y (WebGL is bottom-up)
+    const flipCanvas = document.createElement('canvas');
+    flipCanvas.width = size;
+    flipCanvas.height = size;
+    const flipCtx = flipCanvas.getContext('2d')!;
+    flipCtx.scale(1, -1);
+    flipCtx.drawImage(state.previewCanvas, 0, -size);
+    state.previewContext.drawImage(flipCanvas, 0, 0);
+
+    renderer.setRenderTarget(oldRT);
+    tempRT.dispose();
+    blitMat.dispose();
+    
+    // Trigger a fake "update" for components listening to the canvas
+    (state.previewCanvas as any).version = (state.previewCanvas as any).version || 0;
+    (state.previewCanvas as any).version++;
+  }, [gl]);
+
   // ---- RAF Compositor ----
   const compositeAllLayers = useCallback(() => {
     const state = stateRef.current;
@@ -297,9 +346,12 @@ export function useWebGLPaint(
       gl.render(state.compositeScene, state.compositeCamera);
     }
     
-    gl.setRenderTarget(oldRT);
+    gl.setRenderTarget(null); // Set render target back to canvas
     state.needsComposite = false;
-  }, [gl, layers]);
+    
+    // Sync preview canvas after compositing
+    syncPreviewCanvas();
+  }, [gl, layers, syncPreviewCanvas]);
 
   useEffect(() => {
     let animId: number;
@@ -324,6 +376,7 @@ export function useWebGLPaint(
 
   // Provide texture out
   const texture = stateRef.current.dilatedTarget?.texture || null;
+  const previewCanvas = stateRef.current.previewCanvas;
 
   // ---- Missing Layer Operations ----
   const removeLayer = useCallback((id: string) => {
@@ -512,6 +565,8 @@ export function useWebGLPaint(
     stopPainting,
     textureSize: { width: stateRef.current.textureSize, height: stateRef.current.textureSize },
     texture,
+    previewCanvas,
+    syncPreviewCanvas,
     layers,
     activeLayerId,
     addLayer,
