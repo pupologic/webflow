@@ -238,7 +238,7 @@ function App() {
             </div>
             <div className="hidden sm:flex items-baseline gap-2">
               <h1 className="text-xs font-semibold text-zinc-100 tracking-wide">3D PAINTER</h1>
-              <span className="text-[10px] text-zinc-500 font-medium">v1.2.1</span>
+              <span className="text-[10px] text-zinc-500 font-medium">v1.2.2</span>
             </div>
           </div>
 
