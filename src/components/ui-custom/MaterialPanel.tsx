@@ -12,6 +12,7 @@ interface MaterialPanelProps {
   onRoughnessChange: (val: number) => void;
   metalness: number;
   onMetalnessChange: (val: number) => void;
+  colorHistory?: string[];
 }
 
 export const MaterialPanel: React.FC<MaterialPanelProps> = ({
@@ -21,6 +22,7 @@ export const MaterialPanel: React.FC<MaterialPanelProps> = ({
   onRoughnessChange,
   metalness,
   onMetalnessChange,
+  colorHistory = []
 }) => {
   return (
     <div className="space-y-6 p-5 bg-[#09090b] rounded-xl border border-white/5 shadow-lg">
@@ -43,7 +45,7 @@ export const MaterialPanel: React.FC<MaterialPanelProps> = ({
               />
             </PopoverTrigger>
             <PopoverContent className="w-auto p-0 border-none bg-transparent shadow-none" side="right" align="start">
-              <ColorPicker color={color} onColorChange={onColorChange} />
+              <ColorPicker color={color} onColorChange={onColorChange} recentColors={colorHistory} />
             </PopoverContent>
           </Popover>
           <input 

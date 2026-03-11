@@ -25,8 +25,11 @@ const fragmentShader = `
   uniform bool uUseTexture;
   uniform bool uUseStencil;
   uniform sampler2D uStencilTexture;
-  uniform mat3 uStencilMatrix; // Inverse transform from Screen Space to Stencil UV Space
-
+  uniform mat3 uStencilMatrix; // Transform from Screen Space to Stencil UV Space
+  uniform mat4 uVPMatrix; // View-Projection Matrix for screen space projection
+  uniform int uStencilMode; // 0: Alpha, 1: Invert, 2: Luminance
+  uniform bool uIsEraser;
+  
     varying vec3 vWorldPos;
     varying vec3 vNormal;
 
@@ -117,23 +120,50 @@ const fragmentShader = `
       // Apply angle falloff for smoother edges on curved surfaces
       alphaMultiplier *= smoothstep(0.0, 0.2, angleFactor);
 
-      // 4. Stencil Masking (Screen Space)
+      // 4. Stencil Masking (Projected Screen Space)
       if (uUseStencil) {
-          // gl_FragCoord is in window coordinates (0 to width, 0 to height)
-          vec3 stencilPos = uStencilMatrix * vec3(gl_FragCoord.x, gl_FragCoord.y, 1.0);
+          // Project world position to NDC space [-1, 1]
+          vec4 projectedPos = uVPMatrix * vec4(vWorldPos, 1.0);
+          vec2 screenPos = projectedPos.xy / projectedPos.w; // Perspective divide
           
-          // Check if fragment is within the stencil quad bounds (0.0 to 1.0 in local UV space)
+          // Map NDC (-1..1) to Normalized Screen Coordinates (0..1)
+          vec2 screenUV = screenPos * 0.5 + 0.5;
+          
+          // Apply Stencil Matrix (Maps 0..1 Screen space to Stencil UV space)
+          vec3 stencilPos = uStencilMatrix * vec3(screenUV, 1.0);
+          
           if (stencilPos.x >= 0.0 && stencilPos.x <= 1.0 && stencilPos.y >= 0.0 && stencilPos.y <= 1.0) {
-              vec4 stencilColor = texture2D(uStencilTexture, vec2(stencilPos.x, 1.0 - stencilPos.y)); // Flip Y for WebGL texture
-              // Use alpha of stencil to mask brush
-              alphaMultiplier *= stencilColor.a;
+              vec4 stencilColor = texture2D(uStencilTexture, vec2(stencilPos.x, stencilPos.y)); 
+              
+              // Calculate luminance
+              float lum = (stencilColor.r + stencilColor.g + stencilColor.b) / 3.0;
+              
+              float stencilMask = 1.0;
+              
+              if (uStencilMode == 0) { // Alpha
+                  stencilMask = stencilColor.a;
+                  // Auto fallback to luminance if image has no transparency at all
+                  if (stencilMask > 0.99 && stencilColor.r < 0.99) {
+                     // stencilMask = lum; // Disabled auto-fallback to give user strict control via modes
+                  }
+              } else if (uStencilMode == 1) { // Invert (Inverts Alpha)
+                  stencilMask = 1.0 - stencilColor.a;
+              } else if (uStencilMode == 2) { // Luminance
+                  stencilMask = lum * stencilColor.a; // Multiply by alpha so transparent areas don't paint out of nowhere
+              }
+              
+              alphaMultiplier *= stencilMask;
           } else {
-              // Outside stencil bounds means it's masked out completely
+              // Outside stencil bounds: No paint allowed (standard stencil behavior)
               alphaMultiplier = 0.0;
           }
       }
 
-      gl_FragColor = vec4(uColor, uOpacity * alphaMultiplier);
+      if (uIsEraser) {
+        gl_FragColor = vec4(0.0, 0.0, 0.0, alphaMultiplier * uOpacity);
+      } else {
+        gl_FragColor = vec4(uColor, uOpacity * alphaMultiplier);
+      }
     }
   `;
 
@@ -155,7 +185,10 @@ export class BrushShaderMaterial extends THREE.ShaderMaterial {
         uBrushTexture: { value: null },
         uUseStencil: { value: false },
         uStencilTexture: { value: null },
-        uStencilMatrix: { value: new THREE.Matrix3() }
+        uStencilMatrix: { value: new THREE.Matrix3() },
+        uVPMatrix: { value: new THREE.Matrix4() },
+        uStencilMode: { value: 0 },
+        uIsEraser: { value: false }
       },
       transparent: true,
       depthTest: false,
@@ -175,7 +208,9 @@ export class BrushShaderMaterial extends THREE.ShaderMaterial {
     normal: THREE.Vector3 = new THREE.Vector3(0, 0, 1),
     angle: number = 0.0,
     stencilTexture: THREE.Texture | null = null,
-    stencilMatrix: THREE.Matrix3 | null = null
+    stencilMatrix: THREE.Matrix3 | null = null,
+    vpMatrix: THREE.Matrix4 | null = null,
+    stencilMode: number = 0
   ) {
     this.uniforms.uColor.value.set(color);
     this.uniforms.uOpacity.value = opacity;
@@ -194,13 +229,29 @@ export class BrushShaderMaterial extends THREE.ShaderMaterial {
       this.uniforms.uBrushTexture.value = null;
     }
     
-    if (stencilTexture && stencilMatrix) {
+    if (stencilTexture && stencilMatrix && vpMatrix) {
       this.uniforms.uUseStencil.value = true;
       this.uniforms.uStencilTexture.value = stencilTexture;
       this.uniforms.uStencilMatrix.value.copy(stencilMatrix);
+      this.uniforms.uVPMatrix.value.copy(vpMatrix);
+      this.uniforms.uStencilMode.value = stencilMode;
     } else {
       this.uniforms.uUseStencil.value = false;
       this.uniforms.uStencilTexture.value = null;
+    }
+
+    // Handle Eraser Blending
+    if (color === 'erase') {
+        this.uniforms.uIsEraser.value = true;
+        this.blending = THREE.CustomBlending;
+        this.blendEquation = THREE.AddEquation;
+        this.blendSrc = THREE.ZeroFactor;
+        this.blendDst = THREE.OneMinusSrcAlphaFactor;
+        this.blendSrcAlpha = THREE.ZeroFactor;
+        this.blendDstAlpha = THREE.OneMinusSrcAlphaFactor;
+    } else {
+        this.uniforms.uIsEraser.value = false;
+        this.blending = THREE.NormalBlending;
     }
   }
 }

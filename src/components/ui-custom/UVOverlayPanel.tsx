@@ -47,8 +47,8 @@ export const UVOverlayPanel: React.FC<UVOverlayPanelProps> = ({ texture, preview
     if (!ctx) return;
 
     const numFaces = indices ? indices.length / 3 : uvs.length / 6;
-    ctx.strokeStyle = 'rgba(0, 220, 80, 0.65)';
-    ctx.lineWidth = 1.2;
+    ctx.strokeStyle = 'rgba(100, 100, 110, 0.45)';
+    ctx.lineWidth = 0.4;
     ctx.beginPath();
 
     const wrap = (v: number) => { const r = v % 1; return r < 0 ? r + 1 : r; };

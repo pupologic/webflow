@@ -42,6 +42,7 @@ interface PaintableMeshProps {
   onLayerControlsReady?: (controls: any) => void;
   onBrushSettingsChange?: (settings: BrushSettings) => void;
   activeStencil?: OverlayData;
+  onColorPainted?: (color: string) => void;
 }
 
 export const PaintableMesh: React.FC<PaintableMeshProps> = ({
@@ -59,7 +60,8 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
   onPaintingChange,
   onLayerControlsReady,
   onBrushSettingsChange,
-  activeStencil
+  activeStencil,
+  onColorPainted
 }) => {
   const groupRef = useRef<THREE.Group>(null);
   const { camera, gl, size } = useThree();
@@ -71,19 +73,21 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
   const { 
     initPaintSystem, startPainting, paint, stopPainting,
     texture, previewCanvas,
-    layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, fillCanvas, undo, redo, exportTexture, sampleColor
+    layers, activeLayerId, addLayer, addFolder, removeLayer, updateLayer, setLayerActive, moveLayer, reorderLayer, clearCanvas, fillCanvas, undo, redo, exportTexture, sampleColor,
+    createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask
   } = useWebGLPaint(
     groupRef,
     brushSettings,
     [modelParts],
-    activeStencil
+    activeStencil,
+    onColorPainted
   );
 
   useEffect(() => {
     if (onLayerControlsReady) {
-      onLayerControlsReady({ layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, fillCanvas, undo, redo, exportTexture });
+      onLayerControlsReady({ layers, activeLayerId, addLayer, addFolder, removeLayer, updateLayer, setLayerActive, moveLayer, reorderLayer, clearCanvas, fillCanvas, undo, redo, exportTexture, createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask });
     }
-  }, [layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer, clearCanvas, fillCanvas, undo, redo, exportTexture, onLayerControlsReady]);
+  }, [layers, activeLayerId, addLayer, addFolder, removeLayer, updateLayer, setLayerActive, moveLayer, reorderLayer, clearCanvas, fillCanvas, undo, redo, exportTexture, onLayerControlsReady, createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask]);
 
   // Initialize texture on mount and when resolution changes
   useEffect(() => {
@@ -208,6 +212,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
         isPickingRef.current = true;
         const color = sampleColor(hit);
         onBrushSettingsChange?.({ ...brushSettings, color });
+        onColorPainted?.(color);
         return;
       }
       

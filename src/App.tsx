@@ -1,25 +1,18 @@
 import { useState, useCallback, useRef, useEffect } from 'react';
 import * as THREE from 'three';
 import { Scene3D } from '@/components/3d/Scene3D';
-import { BrushControls } from '@/components/ui-custom/BrushControls';
-import { ColorPicker } from '@/components/ui-custom/ColorPicker';
-import { TexturePreview } from '@/components/ui-custom/TexturePreview';
-import { MeshSelector } from '@/components/ui-custom/MeshSelector';
-import { TransformPanel } from '@/components/ui-custom/TransformPanel';
-import { LayersPanel } from '@/components/ui-custom/LayersPanel';
-import { EnvironmentPanel } from '@/components/ui-custom/EnvironmentPanel';
-import { MaterialPanel } from '@/components/ui-custom/MaterialPanel';
-import { EssentialsPanel } from '@/components/ui-custom/EssentialsPanel';
 import type { BrushSettings } from '@/hooks/useWebGLPaint';
-import { Brush, Box, Layers, Image as ImageIcon, Sun, Eraser, Undo2, Redo2, Columns2, Boxes, PaintBucket, Sparkles } from 'lucide-react';
 import { OverlayManager } from '@/components/ui-custom/OverlayManager';
 import type { OverlayData } from '@/components/ui-custom/OverlayManager';
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
-import { Slider } from '@/components/ui/slider';
 import { Toaster, toast } from 'sonner';
 import { UVOverlayPanel } from '@/components/ui-custom/UVOverlayPanel';
 import { OBJLoader } from 'three/examples/jsm/loaders/OBJLoader.js';
 import suzanneObjStr from '@/models/Suzanne.obj?raw';
+import { Dashboard } from '@/components/ui-custom/Dashboard';
+import { ProjectManager } from '@/services/ProjectManager';
+import type { SavedProject } from '@/services/ProjectManager';
+import { TopHeader } from '@/components/ui-custom/TopHeader';
+import { LeftShortcutBar } from '@/components/ui-custom/LeftShortcutBar';
 import './App.css';
 
 export interface ModelPart {
@@ -52,11 +45,28 @@ function App() {
   const [modelParts, setModelParts] = useState<ModelPart[]>([]);
   const [overlays, setOverlays] = useState<OverlayData[]>([]);
 
+  // Project Management State
+  const [isDashboard, setIsDashboard] = useState(true);
+  const [currentProjectId, setCurrentProjectId] = useState<string | null>(null);
+
   const [modelTransform, setModelTransform] = useState({
     position: [0, 0, 0] as [number, number, number],
     rotation: [0, 0, 0] as [number, number, number],
     scale: [1, 1, 1] as [number, number, number]
   });
+
+  // Shortcut Bar State
+  const [isMaskEditing, setIsMaskEditing] = useState(false);
+  const [primaryColor, setPrimaryColor] = useState('#ff0000');
+  const [secondaryColor, setSecondaryColor] = useState('#1e40af');
+  const [colorHistory, setColorHistory] = useState<string[]>(['#ff0000']);
+
+  const handleColorPainted = useCallback((color: string) => {
+    setColorHistory(prev => {
+      const filtered = prev.filter(c => c.toLowerCase() !== color.toLowerCase());
+      return [color, ...filtered].slice(0, 10);
+    });
+  }, []);
 
   const [showUVPanel, setShowUVPanel] = useState<boolean>(false);
   const [uvPanelWidth, setUvPanelWidth] = useState<number>(50); // percent
@@ -267,239 +277,125 @@ function App() {
     reader.readAsText(file);
   }, [handleClear]);
 
+  const handleSaveProject = async () => {
+    if (!layerControls) return;
+    try {
+      const project: SavedProject = {
+        id: currentProjectId || THREE.MathUtils.generateUUID(),
+        name: modelName,
+        lastModified: Date.now(),
+        modelName,
+        brushSettings,
+        layersData: layerControls.layers.map((l: any) => ({
+          id: l.id,
+          name: l.name,
+          visible: l.visible,
+          opacity: l.opacity,
+          blendMode: l.blendMode,
+          isFolder: l.isFolder,
+          parentId: l.parentId,
+          maskEnabled: l.maskEnabled,
+          hasMask: !!l.maskTarget
+        }))
+      };
+      await ProjectManager.saveProject(project);
+      setCurrentProjectId(project.id);
+      toast.success('Projeto salvo com sucesso!');
+    } catch (e) {
+      console.error(e);
+      toast.error('Erro ao salvar o projeto.');
+    }
+  };
+
+  const handleNewProject = (type: 'Suzanne' | 'Cube', file?: File) => {
+    if (file) {
+      handleObjUpload(file);
+    } else {
+      setModelName(type);
+    }
+    setCurrentProjectId(null);
+    setIsDashboard(false);
+  };
+
+  const handleLoadProject = (project: SavedProject) => {
+    setModelName(project.modelName);
+    setBrushSettings(project.brushSettings);
+    setCurrentProjectId(project.id);
+    setIsDashboard(false);
+    toast.success('Projeto carregado!');
+  };
+
+  if (isDashboard) {
+    return <Dashboard onNewProject={handleNewProject} onLoadProject={handleLoadProject} />;
+  }
+
   return (
     <div className="h-screen bg-[#09090b] text-zinc-100 flex flex-col font-sans">
       <Toaster position="top-right" theme="dark" />
-      
-      <header className="bg-[#121214] border-b border-white/5 px-4 py-3 flex items-center justify-between z-10 shadow-md">
-        {/* LEFT SIDE */}
-        <div className="flex items-center gap-4">
-          <div className="flex items-center gap-3 pr-4 border-r border-white/10">
-            <div className="bg-white/5 p-2 rounded-lg border border-white/10">
-              <Brush className="w-4 h-4 text-zinc-300" />
-            </div>
-            <div className="hidden sm:flex items-baseline gap-2">
-              <h1 className="text-xs font-semibold text-zinc-100 tracking-wide">3D PAINTER</h1>
-              <span className="text-[10px] text-zinc-500 font-medium">v1.3.3</span>
-            </div>
-          </div>
-
-          <div className="flex items-center gap-1">
-            <Popover>
-              <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-2 rounded-md flex items-center justify-center cursor-pointer">
-                <Box className="w-5 h-5" />
-              </PopoverTrigger>
-              <PopoverContent className="w-80 bg-[#121214] border-white/10 p-5 mt-2" align="start">
-                <MeshSelector 
-                  modelName={modelName}
-                  onNameChange={setModelName}
-                  onObjUpload={handleObjUpload}
-                  showWireframe={showWireframe}
-                  setShowWireframe={setShowWireframe}
-                  flatShading={flatShading}
-                  setFlatShading={setFlatShading}
-                  modelParts={modelParts}
-                  onTogglePartVisibility={handleTogglePartVisibility}
-                />
-              </PopoverContent>
-            </Popover>
-
-            <Popover>
-              <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-2 rounded-md flex items-center justify-center cursor-pointer">
-                <Boxes className="w-5 h-5" />
-              </PopoverTrigger>
-              <PopoverContent className="w-80 bg-[#121214] border-white/10 p-5 mt-2" align="start">
-                <TransformPanel 
-                  modelTransform={modelTransform}
-                  onUpdateTransform={handleUpdateTransform}
-                />
-              </PopoverContent>
-            </Popover>
-
-            <Popover>
-              <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-2 rounded-md flex items-center justify-center cursor-pointer">
-                <ImageIcon className="w-5 h-5" />
-              </PopoverTrigger>
-              <PopoverContent className="w-80 bg-[#121214] border-white/10 p-5 mt-2" align="start">
-                <TexturePreview 
-                texture={currentTexture}
-                previewCanvas={previewCanvas}
-                onExport={handleExport}
-                onClear={handleClear}
-                onImport={handleImport}
-                resolution={textureResolution}
-                onResolutionChange={setTextureResolution}
-              />
-              </PopoverContent>
-            </Popover>
-          </div>
-        </div>
-        
-        {/* RIGHT SIDE */}
-        <div className="flex items-center gap-1">
-          <button
-            onClick={() => setShowUVPanel(!showUVPanel)}
-            className={`transition-colors p-2 rounded-md flex items-center justify-center cursor-pointer ${showUVPanel ? 'text-zinc-100 bg-white/10' : 'text-zinc-400 hover:text-zinc-200 hover:bg-white/5'}`}
-            title="Toggle UV View"
-          >
-            <Columns2 className="w-5 h-5" />
-          </button>
-          
-          <button
-            onClick={handleFill}
-            className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-2 rounded-md cursor-pointer"
-            title="Fill Layer (Paint Bucket)"
-          >
-            <PaintBucket className="w-5 h-5" />
-          </button>
-
-          <div className="w-px h-6 bg-white/10 mx-1" />
-
-          <Popover>
-            <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-2 rounded-md cursor-pointer">
-              <Brush className="w-5 h-5" />
-            </PopoverTrigger>
-            <PopoverContent className="w-96 bg-[#121214] border-white/10 p-5 mt-2 shadow-2xl">
-              <BrushControls brushSettings={brushSettings} onBrushSettingsChange={setBrushSettings} />
-            </PopoverContent>
-          </Popover>
-
-          <Popover>
-            <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-2 rounded-md">
-              <Sun className="w-5 h-5" />
-            </PopoverTrigger>
-            <PopoverContent className="w-96 bg-[#121214] border-white/10 p-5 mt-2 shadow-2xl">
-              <EnvironmentPanel
-                matcapName={matcapName}
-                onMatcapChange={setMatcapName}
-                lightSetup={lightSetup}
-                onLightSetupChange={setLightSetup}
-                lightIntensity={lightIntensity}
-                onLightIntensityChange={setLightIntensity}
-                showGrid={showGrid}
-                setShowGrid={setShowGrid}
-                focalLength={focalLength}
-                onFocalLengthChange={setFocalLength}
-                envIntensity={envIntensity}
-                onEnvIntensityChange={setEnvIntensity}
-              />
-          </PopoverContent>
-        </Popover>
-
-          <Popover>
-            <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-2 rounded-md">
-              <Boxes className="w-5 h-5" />
-            </PopoverTrigger>
-            <PopoverContent className="w-96 bg-[#121214] border-white/10 p-5 mt-2 shadow-2xl">
-              <MaterialPanel
-                color={objectColor}
-                onColorChange={setObjectColor}
-                roughness={roughness}
-                onRoughnessChange={setRoughness}
-                metalness={metalness}
-                onMetalnessChange={setMetalness}
-              />
-            </PopoverContent>
-          </Popover>
-
-          <Popover>
-            <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-2 rounded-md">
-              <Sparkles className="w-5 h-5" />
-            </PopoverTrigger>
-            <PopoverContent className="w-80 bg-[#121214] border-white/10 p-5 mt-2 shadow-2xl">
-              <EssentialsPanel 
-                brushSettings={brushSettings}
-                onBrushSettingsChange={setBrushSettings}
-              />
-            </PopoverContent>
-          </Popover>
-
-
-
-          <Popover>
-            <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-2 rounded-md">
-              <Layers className="w-5 h-5" />
-            </PopoverTrigger>
-            <PopoverContent className="w-80 bg-[#121214] border-white/10 p-5 mt-2">
-              <LayersPanel layerControls={layerControls} />
-            </PopoverContent>
-          </Popover>
-
-          <Popover>
-            <PopoverTrigger className="p-1.5 focus:outline-none hover:scale-105 transition-transform">
-              <div 
-                className="w-7 h-7 rounded-full border-2 border-white/20 shadow-sm" 
-                style={{ backgroundColor: brushSettings.color }} 
-              />
-            </PopoverTrigger>
-            <PopoverContent className="w-80 bg-[#121214] border-white/10 p-5 mt-2" align="end">
-              <ColorPicker color={brushSettings.color} onColorChange={(color) => setBrushSettings({ ...brushSettings, color })} />
-            </PopoverContent>
-          </Popover>
-        </div>
-      </header>
+         <TopHeader
+        setIsDashboard={setIsDashboard}
+        modelName={modelName}
+        setModelName={setModelName}
+        handleObjUpload={handleObjUpload}
+        showWireframe={showWireframe}
+        setShowWireframe={setShowWireframe}
+        flatShading={flatShading}
+        setFlatShading={setFlatShading}
+        modelParts={modelParts}
+        handleTogglePartVisibility={handleTogglePartVisibility}
+        modelTransform={modelTransform}
+        handleUpdateTransform={handleUpdateTransform}
+        currentTexture={currentTexture}
+        previewCanvas={previewCanvas}
+        handleExport={handleExport}
+        handleClear={handleClear}
+        handleImport={handleImport}
+        textureResolution={textureResolution}
+        setTextureResolution={setTextureResolution}
+        handleSaveProject={handleSaveProject}
+        showUVPanel={showUVPanel}
+        setShowUVPanel={setShowUVPanel}
+        handleFill={handleFill}
+        brushSettings={brushSettings}
+        setBrushSettings={setBrushSettings}
+        matcapName={matcapName}
+        setMatcapName={setMatcapName}
+        lightSetup={lightSetup}
+        setLightSetup={setLightSetup}
+        lightIntensity={lightIntensity}
+        setLightIntensity={setLightIntensity}
+        showGrid={showGrid}
+        setShowGrid={setShowGrid}
+        focalLength={focalLength}
+        setFocalLength={setFocalLength}
+        envIntensity={envIntensity}
+        setEnvIntensity={setEnvIntensity}
+        objectColor={objectColor}
+        setObjectColor={setObjectColor}
+        roughness={roughness}
+        setRoughness={setRoughness}
+        metalness={metalness}
+        setMetalness={setMetalness}
+        colorHistory={colorHistory}
+        layerControls={layerControls}
+      />
 
       <div className="flex-1 flex overflow-hidden bg-[#09090b]">
 
         <main className="flex-1 relative flex">
-              {/* Vertical Shortcut Bar */}
-          <div className="absolute top-1/2 -translate-y-1/2 left-4 bg-[#121214]/90 backdrop-blur-md rounded-2xl py-4 px-2.5 border border-white/10 shadow-3xl flex flex-col items-center gap-4 z-20">
-            <button 
-              onClick={() => setBrushSettings({...brushSettings, mode: 'paint'})}
-              className={`p-2 rounded-xl transition-all ${brushSettings.mode !== 'erase' ? 'bg-zinc-700 text-zinc-100 shadow-md scale-105' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`}
-              title="Paint"
-            >
-              <Brush className="w-5 h-5" />
-            </button>
-            <button 
-              onClick={() => setBrushSettings({...brushSettings, mode: 'erase'})}
-              className={`p-2 rounded-xl transition-all ${brushSettings.mode === 'erase' ? 'bg-zinc-700 text-zinc-100 shadow-md scale-105' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`}
-              title="Erase"
-            >
-              <Eraser className="w-5 h-5" />
-            </button>
-            
-            <div className="w-6 h-36 py-2 flex justify-center" title="Brush Size">
-              <Slider 
-                orientation="vertical"
-                value={[brushSettings.size]}
-                onValueChange={([val]) => setBrushSettings({...brushSettings, size: val})}
-                min={2}
-                max={150}
-                step={1}
-                className="h-full"
-              />
-            </div>
-            
-            <div className="w-6 h-28 py-2 flex justify-center" title="Brush Opacity">
-              <Slider 
-                orientation="vertical"
-                value={[brushSettings.opacity]}
-                onValueChange={([val]) => setBrushSettings({...brushSettings, opacity: val})}
-                min={0.01}
-                max={1}
-                step={0.01}
-                className="h-full"
-              />
-            </div>
-
-            <div className="w-full h-px bg-white/10 my-1"/>
-
-            <button 
-              onClick={() => layerControls?.undo?.()}
-              className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-white/5 rounded-xl transition-colors"
-              title="Undo"
-            >
-              <Undo2 className="w-5 h-5" />
-            </button>
-            <button 
-              onClick={() => layerControls?.redo?.()}
-              className="p-1.5 text-zinc-400 hover:text-zinc-200 hover:bg-white/5 rounded-xl transition-colors"
-              title="Redo"
-            >
-              <Redo2 className="w-5 h-5" />
-            </button>
-          </div>
+          {/* Vertical Shortcut Bar */}
+          <LeftShortcutBar 
+            brushSettings={brushSettings}
+            setBrushSettings={setBrushSettings}
+            layerControls={layerControls}
+            isMaskEditing={isMaskEditing}
+            setIsMaskEditing={setIsMaskEditing}
+            primaryColor={primaryColor}
+            setPrimaryColor={setPrimaryColor}
+            secondaryColor={secondaryColor}
+            setSecondaryColor={setSecondaryColor}
+            colorHistory={colorHistory}
+          />
 
           <div className="flex-1 w-full relative flex" ref={containerRef}>
             {/* OVERLAYS UI (DOM Level) */}
@@ -533,6 +429,7 @@ function App() {
                 metalness={metalness}
                 onTextureChange={handleTextureChange}
                 onLayerControlsReady={setLayerControls}
+                onColorPainted={handleColorPainted}
                 activeStencil={overlays.find(o => o.type === 'stencil' && o.visible)}
               />
             </div>

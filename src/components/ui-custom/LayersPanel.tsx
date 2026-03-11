@@ -1,17 +1,23 @@
 import React, { useState, useRef, useEffect } from 'react';
 import * as THREE from 'three';
 import type { GPULayer } from '@/hooks/useWebGLPaint';
-import { Layers, Plus, Trash2, Eye, EyeOff, ArrowUp, ArrowDown, Download } from 'lucide-react';
+import { Layers, Plus, Trash2, Eye, EyeOff, ArrowUp, ArrowDown, Folder, FolderPlus, ChevronRight, ChevronDown, CornerUpLeft } from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
 
 interface LayerControls {
   layers: GPULayer[];
   activeLayerId: string | null;
   addLayer: (name?: string) => void;
+  addFolder: (name?: string) => void;
   removeLayer: (id: string) => void;
   updateLayer: (id: string, updates: Partial<GPULayer>) => void;
   setLayerActive: (id: string) => void;
   moveLayer: (id: string, direction: 'up' | 'down') => void;
+  reorderLayer: (sourceId: string, targetId: string | null, newParentId?: string) => void;
+  createLayerMask?: (id: string) => void;
+  deleteLayerMask?: (id: string) => void;
+  toggleLayerMask?: (id: string) => void;
+  setEditingMask?: (id: string, editing: boolean) => void;
 }
 
 interface LayersPanelProps {
@@ -28,8 +34,12 @@ const blendModes = [
 export const LayersPanel: React.FC<LayersPanelProps> = ({ layerControls }) => {
   if (!layerControls) return null;
 
-  const { layers, activeLayerId, addLayer, removeLayer, updateLayer, setLayerActive, moveLayer } = layerControls;
+  const { layers, activeLayerId, addLayer, addFolder, removeLayer, updateLayer, setLayerActive, moveLayer, reorderLayer, createLayerMask, deleteLayerMask, toggleLayerMask, setEditingMask } = layerControls;
   const [editingLayerId, setEditingLayerId] = useState<string | null>(null);
+  const [draggedId, setDraggedId] = useState<string | null>(null);
+  const [dragOverId, setDragOverId] = useState<string | null>(null);
+  const [dropParentId, setDropParentId] = useState<string | null>(null);
+  const [collapsedItems, setCollapsedItems] = useState<Set<string>>(new Set());
   const [editName, setEditName] = useState('');
   const inputRef = useRef<HTMLInputElement>(null);
 
@@ -58,6 +68,52 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({ layerControls }) => {
     if (e.key === 'Escape') setEditingLayerId(null);
   };
 
+  const toggleCollapse = (e: React.MouseEvent, id: string) => {
+    e.stopPropagation();
+    setCollapsedItems(prev => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  };
+
+  const onDragStart = (id: string) => {
+    setDraggedId(id);
+  };
+
+  const onDragOver = (e: React.DragEvent, targetId: string) => {
+    e.preventDefault();
+    const targetLayer = layers.find(l => l.id === targetId);
+    if (!targetLayer) return;
+
+    if (targetLayer.isFolder) {
+      setDropParentId(targetId);
+      setDragOverId(null);
+    } else {
+      setDragOverId(targetId);
+      setDropParentId(targetLayer.parentId || null);
+    }
+  };
+
+  const onDrop = (e: React.DragEvent, targetId: string | null) => {
+    e.preventDefault();
+    if (!draggedId) return;
+    if (draggedId === targetId) return;
+
+    const targetLayer = targetId ? layers.find(l => l.id === targetId) : null;
+    const sourceLayer = layers.find(l => l.id === draggedId);
+    
+    // Folders cannot have parents
+    const newParentId = (sourceLayer?.isFolder || !targetLayer) ? undefined : (targetLayer.isFolder ? targetId : targetLayer.parentId);
+    
+    reorderLayer(draggedId, targetId, newParentId === null ? undefined : newParentId);
+    
+    setDraggedId(null);
+    setDragOverId(null);
+    setDropParentId(null);
+  };
+
   return (
     <div className="bg-[#09090b] rounded-xl p-5 border border-white/5 shadow-lg">
       <div className="flex items-center justify-between mb-4">
@@ -65,24 +121,63 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({ layerControls }) => {
           <Layers className="w-4 h-4 text-zinc-400" />
           Layers
         </h3>
-        <button
-          onClick={() => addLayer('New Layer')}
-          className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-white"
-          title="Add Layer"
-        >
-          <Plus className="w-4 h-4" />
-        </button>
+        <div className="flex items-center gap-1">
+          <button
+            onClick={() => addFolder('New Folder')}
+            className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-white"
+            title="Add Folder"
+          >
+            <FolderPlus className="w-4 h-4" />
+          </button>
+          <button
+            onClick={() => addLayer('New Layer')}
+            className="p-1 hover:bg-gray-700 rounded text-gray-400 hover:text-white"
+            title="Add Layer"
+          >
+            <Plus className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
-      <div className="space-y-2 max-h-[300px] overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent">
-        {layers.map((layer, index) => (
+      <div className="space-y-2 max-h-[400px] overflow-y-auto pr-2 scrollbar-thin scrollbar-thumb-zinc-800 scrollbar-track-transparent">
+        {layers.map((layer, index) => {
+          let isHiddenByParent = false;
+          let currentParentId = layer.parentId;
+          while (currentParentId) {
+            if (collapsedItems.has(currentParentId)) {
+              isHiddenByParent = true;
+              break;
+            }
+            const parent = layers.find(l => l.id === currentParentId);
+            currentParentId = parent?.parentId;
+          }
+          
+          if (isHiddenByParent) return null;
+
+          const hasParent = layer.parentId && layers.some(l => l.id === layer.parentId);
+          const isCollapsed = collapsedItems.has(layer.id);
+          
+          return (
           <div
             key={layer.id}
-            className={`p-3 rounded-xl border transition-all ${
+            draggable
+            onDragStart={() => onDragStart(layer.id)}
+            onDragOver={(e) => onDragOver(e, layer.id)}
+            onDragEnd={() => { setDraggedId(null); setDragOverId(null); setDropParentId(null); }}
+            onDrop={(e) => onDrop(e, layer.id)}
+            className={`p-3 rounded-xl border transition-all cursor-move ${
               activeLayerId === layer.id
                 ? 'bg-zinc-800/50 border-white/20'
                 : 'bg-transparent border-white/5 hover:border-white/10'
-            } ${layer.clippingParentId ? 'ml-6 relative before:content-[""] before:absolute before:-left-3 before:top-1/2 before:w-2 before:h-[1px] before:bg-zinc-600' : ''}`}
+            } ${draggedId === layer.id ? 'opacity-30' : ''}
+              ${dragOverId === layer.id ? 'border-t-2 border-t-amber-500' : ''}
+              ${dropParentId === layer.id && layer.isFolder ? 'bg-amber-500/10 border-amber-500/30' : ''}
+              ${hasParent ? 'ml-6 relative before:content-[""] before:absolute before:-left-3 before:top-1/2 before:w-2 before:h-[1px] before:bg-zinc-600' : ''} 
+              ${layer.clippingParentId && !hasParent ? 'ml-6 relative before:content-[""] before:absolute before:-left-3 before:top-1/2 before:w-2 before:h-[1px] before:bg-zinc-600' : ''}`}
+            onClick={() => {
+              if (draggedId) return; // Ignore clicks while dragging
+              if (!layer.isFolder) setLayerActive(layer.id);
+            }}
           >
             <div className="flex items-center justify-between gap-2 mb-2">
               <button
@@ -95,61 +190,95 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({ layerControls }) => {
                 {layer.visible ? <Eye className="w-4 h-4" /> : <EyeOff className="w-4 h-4" />}
               </button>
               
-              {editingLayerId === layer.id ? (
-                <input
-                  ref={inputRef}
-                  className="flex-1 bg-zinc-900 text-white text-sm font-medium border border-zinc-600 rounded px-2 py-0.5 outline-none focus:ring-1 focus:ring-zinc-400"
-                  value={editName}
-                  onChange={(e) => setEditName(e.target.value)}
-                  onBlur={saveRename}
-                  onKeyDown={handleKeyDown}
-                  onClick={(e) => e.stopPropagation()}
-                />
-              ) : (
+              <div className="flex items-center gap-1.5 flex-1 min-w-0">
                 <button
-                  className="flex-1 text-left truncate text-sm font-medium focus:outline-none text-white hover:text-zinc-200"
-                  onClick={() => setLayerActive(layer.id)}
-                  onDoubleClick={(e) => startEditing(e, layer.id, layer.name)}
+                  onClick={(e) => toggleCollapse(e, layer.id)}
+                  className="flex-shrink-0 text-zinc-500 hover:text-white"
                 >
-                  {layer.name}
+                  {isCollapsed ? <ChevronRight className="w-4 h-4" /> : <ChevronDown className="w-4 h-4" />}
                 </button>
-              )}
+                {layer.isFolder ? <Folder className="w-4 h-4 flex-shrink-0 text-amber-400/80" /> : null}
+                {editingLayerId === layer.id ? (
+                  <input
+                    ref={inputRef}
+                    className="flex-1 bg-zinc-900 text-white text-sm font-medium border border-zinc-600 rounded px-2 py-0.5 outline-none focus:ring-1 focus:ring-zinc-400"
+                    value={editName}
+                    onChange={(e) => setEditName(e.target.value)}
+                    onBlur={saveRename}
+                    onKeyDown={handleKeyDown}
+                    onClick={(e) => e.stopPropagation()}
+                  />
+                ) : (
+                  <button
+                    className={`flex-1 text-left truncate text-sm font-medium focus:outline-none transition-colors ${activeLayerId === layer.id && !layer.isEditingMask ? 'text-amber-400' : 'text-zinc-300 hover:text-white'}`}
+                    onClick={() => {
+                      if (!layer.isFolder) {
+                        setLayerActive(layer.id);
+                        if (setEditingMask) setEditingMask(layer.id, false);
+                      }
+                    }}
+                    onDoubleClick={(e) => startEditing(e, layer.id, layer.name)}
+                  >
+                    {layer.name}
+                  </button>
+                )}
+                
+                {layer.maskTarget && (
+                  <button
+                    title="Edit Layer Mask"
+                    onClick={(e) => { 
+                      e.stopPropagation(); 
+                      setLayerActive(layer.id); 
+                      if (setEditingMask) setEditingMask(layer.id, true); 
+                    }}
+                    className={`flex-shrink-0 w-6 h-6 ml-1 rounded border bg-zinc-800 flex items-center justify-center relative overflow-hidden transition-all ${activeLayerId === layer.id && layer.isEditingMask ? 'border-amber-500 ring-1 ring-amber-500 shadow-[0_0_8px_rgba(245,158,11,0.5)]' : 'border-zinc-600 hover:border-zinc-400 opacity-60'}`}
+                  >
+                    <div className="w-1/2 h-full bg-white absolute left-0" />
+                    <div className="w-1/2 h-full bg-black absolute right-0" />
+                    {!layer.maskEnabled && <div className="absolute inset-0 z-10 flex items-center justify-center"><div className="w-full h-0.5 bg-red-500/80 rotate-45" /></div>}
+                  </button>
+                )}
+              </div>
 
-              <button
-                className="flex-shrink-0 text-gray-500 hover:text-white disabled:opacity-30 disabled:hover:text-gray-500"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  moveLayer(layer.id, 'up');
-                }}
-                disabled={index === 0}
-              >
-                <ArrowUp className="w-4 h-4" />
-              </button>
+              {!layer.isFolder && hasParent ? (
+                <button
+                  className="flex-shrink-0 text-zinc-500 hover:text-amber-400 disabled:opacity-30 ml-2"
+                  title="Remove from Folder"
+                  onClick={(e) => { 
+                    e.stopPropagation(); 
+                    if (layer.parentId) reorderLayer(layer.id, layer.parentId, undefined); 
+                  }}
+                >
+                  <CornerUpLeft className="w-3.5 h-3.5" />
+                </button>
+              ) : null}
 
-              <button
-                className="flex-shrink-0 text-gray-500 hover:text-white disabled:opacity-30 disabled:hover:text-gray-500"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  moveLayer(layer.id, 'down');
-                }}
-                disabled={index === layers.length - 1}
-              >
-                <ArrowDown className="w-4 h-4" />
-              </button>
-
-              <button
-                className="flex-shrink-0 text-gray-500 hover:text-red-400 disabled:opacity-30 disabled:hover:text-gray-500"
-                onClick={(e) => {
-                  e.stopPropagation();
-                  removeLayer(layer.id);
-                }}
-                disabled={layers.length <= 1}
-              >
-                <Trash2 className="w-4 h-4" />
-              </button>
+              <div className="flex items-center gap-1">
+                <button
+                  className="flex-shrink-0 text-gray-500 hover:text-white disabled:opacity-30"
+                  onClick={(e) => { e.stopPropagation(); moveLayer(layer.id, 'up'); }}
+                  disabled={index === 0}
+                >
+                  <ArrowUp className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  className="flex-shrink-0 text-gray-500 hover:text-white disabled:opacity-30"
+                  onClick={(e) => { e.stopPropagation(); moveLayer(layer.id, 'down'); }}
+                  disabled={index === layers.length - 1}
+                >
+                  <ArrowDown className="w-3.5 h-3.5" />
+                </button>
+                <button
+                  className="flex-shrink-0 text-gray-500 hover:text-red-400 disabled:opacity-30"
+                  onClick={(e) => { e.stopPropagation(); removeLayer(layer.id); }}
+                  disabled={layers.length <= 1 && !layer.isFolder}
+                >
+                  <Trash2 className="w-3.5 h-3.5" />
+                </button>
+              </div>
             </div>
 
-            {activeLayerId === layer.id && (
+            {activeLayerId === layer.id && !layer.isFolder && !isCollapsed && (
               <div className="space-y-4 text-xs pt-3 mt-2 border-t border-white/5">
                 <div className="flex items-center justify-between gap-3">
                   <span className="text-zinc-500 text-[10px] uppercase font-mono tracking-wider w-12">BLEND</span>
@@ -180,34 +309,41 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({ layerControls }) => {
                 </div>
 
                 <div className="flex items-center justify-between gap-3 pt-2 border-t border-white/5">
-                  <span className="text-zinc-500 text-[10px] uppercase font-mono tracking-wider w-16">CLIPPING</span>
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation();
-                      if (layer.clippingParentId) {
-                        updateLayer(layer.id, { clippingParentId: undefined });
-                      } else {
-                        // Clip to the layer immediately below (index + 1 since array is top-to-bottom)
-                        if (index < layers.length - 1) {
-                          updateLayer(layer.id, { clippingParentId: layers[index + 1].id });
-                        }
-                      }
-                    }}
-                    disabled={index === layers.length - 1} // Bottom layer cannot be a clipping mask
-                    className={`flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-2 border transition-colors ${
-                      layer.clippingParentId 
-                        ? 'bg-zinc-700 text-white border-zinc-600 hover:bg-zinc-600' 
-                        : 'bg-zinc-900 border-white/10 text-zinc-400 hover:text-white hover:border-white/30 disabled:opacity-30'
-                    }`}
-                  >
-                    <Download className="w-3 h-3" />
-                    {layer.clippingParentId ? 'Release Mask' : 'Create Mask'}
-                  </button>
+                  <span className="text-zinc-500 text-[10px] uppercase font-mono tracking-wider w-16">LAYER MASK</span>
+                  <div className="flex items-center gap-2 flex-1">
+                    {!layer.maskTarget ? (
+                      <button
+                        onClick={(e) => {
+                          e.stopPropagation();
+                          if (createLayerMask) createLayerMask(layer.id);
+                        }}
+                        className="flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-2 border transition-colors bg-zinc-900 border-white/10 text-zinc-400 hover:text-white hover:border-white/30"
+                      >
+                        <Plus className="w-3 h-3 text-zinc-500" /> Add Mask
+                      </button>
+                    ) : (
+                      <>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); if (toggleLayerMask) toggleLayerMask(layer.id); }}
+                          className={`flex-1 py-1 text-xs border rounded transition-colors ${layer.maskEnabled ? 'bg-amber-500/10 text-amber-500 border-amber-500/50 hover:bg-amber-500/20' : 'bg-transparent border-white/10 text-zinc-500 hover:text-zinc-300'}`}
+                        >
+                          {layer.maskEnabled ? 'Disable' : 'Enable'}
+                        </button>
+                        <button
+                          onClick={(e) => { e.stopPropagation(); if (deleteLayerMask) deleteLayerMask(layer.id); }}
+                          className="px-2 py-1 flex items-center justify-center text-xs border border-red-500/20 text-red-500 rounded transition-colors hover:bg-red-500/10 hover:border-red-500/50"
+                        >
+                          <Trash2 className="w-3.5 h-3.5" />
+                        </button>
+                      </>
+                    )}
+                  </div>
                 </div>
               </div>
             )}
           </div>
-        ))}
+          );
+        })}
       </div>
     </div>
   );

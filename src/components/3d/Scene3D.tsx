@@ -31,6 +31,7 @@ interface Scene3DProps {
   onTextureChange?: (texture: THREE.Texture | null, previewCanvas?: HTMLCanvasElement) => void;
   onLayerControlsReady?: (controls: any) => void;
   activeStencil?: OverlayData;
+  onColorPainted?: (color: string) => void;
 }
 
 const CameraController = ({ focalLength }: { focalLength: number }) => {
@@ -69,7 +70,6 @@ export const Scene3D: React.FC<Scene3DProps> = ({
   showWireframe = false,
   flatShading = false,
   textureResolution = 2048,
-  backgroundColor = '#1a1a1a',
   matcapName = null,
   lightSetup = '3point',
   lightIntensity = 1,
@@ -81,6 +81,8 @@ export const Scene3D: React.FC<Scene3DProps> = ({
   envRotation = 0,
   onTextureChange,
   onLayerControlsReady,
+  activeStencil,
+  onColorPainted
 }) => {
   const [cameraPosition] = useState<[number, number, number]>([0, 0, 8]);
   const controlsRef = useRef<any>(null);
@@ -101,7 +103,7 @@ export const Scene3D: React.FC<Scene3DProps> = ({
   }, [onTextureChange]);
 
   return (
-    <div className="w-full h-full" style={{ backgroundColor }}>
+    <div className="w-full h-full" style={{ background: `linear-gradient(to bottom, #2a2a2e 0%, #0c0c0e 100%)` }}>
       <Canvas
         camera={{ position: cameraPosition, fov: 50 }}
         gl={{ 
@@ -112,7 +114,7 @@ export const Scene3D: React.FC<Scene3DProps> = ({
         style={{ width: '100%', height: '100%' }}
       >
         <CameraController focalLength={focalLength} />
-        <color attach="background" args={[backgroundColor]} />
+        {/* Transparent background to allow the div's gradient to show through */}
         
         {/* Performance Stats */}
         
@@ -160,6 +162,8 @@ export const Scene3D: React.FC<Scene3DProps> = ({
           metalness={metalness}
           onPaintingChange={handlePaintingChange}
           onLayerControlsReady={onLayerControlsReady}
+          activeStencil={activeStencil}
+          onColorPainted={onColorPainted}
         />
 
         {/* Lights (all grouped so rotation applies consistently to the lighting setup) */}

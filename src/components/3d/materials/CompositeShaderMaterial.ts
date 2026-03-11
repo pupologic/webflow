@@ -10,19 +10,25 @@ const vertexShader = `
 
 const fragmentShader = `
   uniform sampler2D tDiffuse;
-  uniform sampler2D tClippingMask;
+  uniform sampler2D tLayerMask;
   uniform float uOpacity;
-  uniform bool uIsClipped;
+  uniform bool uHasMask;
   
   varying vec2 vUv;
   
   void main() {
     vec4 texColor = texture2D(tDiffuse, vUv);
     
-    if (uIsClipped) {
-      vec4 maskColor = texture2D(tClippingMask, vUv);
-      // Multiply the layer's alpha by the clipping parent's alpha
-      texColor.a *= maskColor.a;
+    if (uHasMask) {
+      vec4 maskColor = texture2D(tLayerMask, vUv);
+      // Multiply the layer's alpha by the mask's alpha (or r)
+      texColor.a *= (maskColor.a * maskColor.r); // Allows either pure white+alpha or grayscale black/white masking
+      
+      // If we use brush color for masking, multiplying by both ensures it works whether 
+      // the mask is painted black/white (r=0 vs r=1) or transparent/opaque (a=0 vs a=1)
+      // Actually, normally masks are white=visible, black/transparent=hidden.
+      // Easiest is to just read maskColor.a if we keep our brush logic the same.
+      // Let's just use maskColor.a so it behaves like a standard alpha mask.
     }
     
     // RGB is premultiplied or blended by THREE.js blending modes later
@@ -37,9 +43,9 @@ export class CompositeShaderMaterial extends THREE.ShaderMaterial {
       fragmentShader,
       uniforms: {
         tDiffuse: { value: null },
-        tClippingMask: { value: null },
+        tLayerMask: { value: null },
         uOpacity: { value: 1.0 },
-        uIsClipped: { value: false }
+        uHasMask: { value: false }
       },
       depthTest: false,
       depthWrite: false,
@@ -51,15 +57,15 @@ export class CompositeShaderMaterial extends THREE.ShaderMaterial {
   setLayer(texture: THREE.Texture, opacity: number, blendMode: THREE.Blending) {
     this.uniforms.tDiffuse.value = texture;
     this.uniforms.uOpacity.value = opacity;
-    this.uniforms.uIsClipped.value = false;
+    this.uniforms.uHasMask.value = false;
     this.blending = blendMode;
   }
 
-  setLayerClipped(texture: THREE.Texture, maskTexture: THREE.Texture, opacity: number, blendMode: THREE.Blending) {
+  setLayerMasked(texture: THREE.Texture, maskTexture: THREE.Texture, opacity: number, blendMode: THREE.Blending) {
     this.uniforms.tDiffuse.value = texture;
-    this.uniforms.tClippingMask.value = maskTexture;
+    this.uniforms.tLayerMask.value = maskTexture;
     this.uniforms.uOpacity.value = opacity;
-    this.uniforms.uIsClipped.value = true;
+    this.uniforms.uHasMask.value = true;
     this.blending = blendMode;
   }
 }

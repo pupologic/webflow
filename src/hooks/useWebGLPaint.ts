@@ -6,8 +6,9 @@ import { DilationShaderMaterial } from '../components/3d/materials/DilationShade
 import { CompositeShaderMaterial } from '../components/3d/materials/CompositeShaderMaterial';
 import type { OverlayData } from '../components/ui-custom/OverlayManager';
 
-export type BrushSettings = {
+export interface BrushSettings {
   color: string;
+  secondaryColor?: string;
   size: number;
   opacity: number;
   hardness: number;
@@ -34,7 +35,10 @@ export interface GPULayer {
   target: THREE.WebGLRenderTarget | null; // Null for folders
   isFolder?: boolean;
   parentId?: string; // For UI organization
-  clippingParentId?: string; // For alpha masking
+  clippingParentId?: string; // DEPRECATED: For alpha masking
+  maskTarget?: THREE.WebGLRenderTarget | null;
+  maskEnabled?: boolean;
+  isEditingMask?: boolean;
 }
 
 const MAX_HISTORY = 10;
@@ -43,9 +47,13 @@ export function useWebGLPaint(
   groupRef: React.RefObject<THREE.Group | null>,
   brushSettings: BrushSettings,
   updateDependencies: any[] = [],
-  activeStencil?: OverlayData
+  activeStencil?: OverlayData,
+  onColorPainted?: (color: string) => void
 ) {
   const { gl, camera, size: canvasSize } = useThree();
+  const onColorPaintedRef = useRef(onColorPainted);
+  onColorPaintedRef.current = onColorPainted;
+
   const [layers, setLayers] = useState<GPULayer[]>([]);
   const [activeLayerId, setActiveLayerId] = useState<string | null>(null);
 
@@ -57,6 +65,8 @@ export function useWebGLPaint(
     dilatedTarget: null as THREE.WebGLRenderTarget | null,
     uvMaskTarget: null as THREE.WebGLRenderTarget | null,
     needsUVMaskUpdate: false,
+    
+    layers: [] as GPULayer[], // Ref-based source of truth for renderer
     
     decalScene: new THREE.Scene(),
     decalCamera: new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1),
@@ -93,8 +103,8 @@ export function useWebGLPaint(
     stencilMatrix: new THREE.Matrix3()
   });
 
-  const undoStackRef = useRef<{ layerId: string; target: THREE.WebGLRenderTarget }[]>([]);
-  const redoStackRef = useRef<{ layerId: string; target: THREE.WebGLRenderTarget }[]>([]);
+  const undoStackRef = useRef<{ layerId: string; target: THREE.WebGLRenderTarget, isMask: boolean }[]>([]);
+  const redoStackRef = useRef<{ layerId: string; target: THREE.WebGLRenderTarget, isMask: boolean }[]>([]);
 
   // ---- Setup ----
   const initPaintSystem = useCallback((size: number) => {
@@ -114,6 +124,8 @@ export function useWebGLPaint(
     state.dilatedTarget = new THREE.WebGLRenderTarget(size, size, targetOpts);
     state.uvMaskTarget = new THREE.WebGLRenderTarget(size, size, targetOpts);
 
+    state.layers = []; // Reset on init
+    
     state.decalMesh.material = state.brushMaterial;
     state.decalScene.add(state.decalMesh);
     state.compositeScene.add(state.compositeQuad);
@@ -175,8 +187,9 @@ export function useWebGLPaint(
     const oldRT = gl.getRenderTarget();
     gl.setRenderTarget(newTarget);
     
-    // If it's the first layer, fill with white, else transparent
-    if (layers.length === 0) {
+    // Check real current layers length to decide on clear color
+    // We use state.layers which is the ref-synced source of truth to avoid stale closures
+    if (state.layers.length === 0) {
       gl.setClearColor(0xffffff, 1); 
     } else {
       gl.setClearColor(0x000000, 0); 
@@ -186,23 +199,32 @@ export function useWebGLPaint(
     gl.setRenderTarget(oldRT);
 
     const newLayer: GPULayer = {
-      id: Math.random().toString(36).substr(2, 9),
+      id: THREE.MathUtils.generateUUID(),
       name,
       visible: true,
       opacity: 1,
       blendMode: THREE.NormalBlending,
       target: newTarget,
+      maskTarget: null,
+      maskEnabled: false,
+      isEditingMask: false,
     };
 
     setLayers(prev => {
-      // Unshift to put the new layer at the top (index 0)
       const updated = [newLayer, ...prev];
-      if (!activeLayerId) setActiveLayerId(newLayer.id);
+      state.layers = updated;
+      state.needsComposite = true;
       return updated;
     });
     
-    state.needsComposite = true;
-  }, [activeLayerId, gl]);
+    // Always auto-select the new layer
+    setActiveLayerId(newLayer.id);
+  }, [gl]); // activeLayerId removed from deps as we now ALWAYS set it, layers length checked via ref
+
+  // Sync ref to state
+  useEffect(() => {
+    stateRef.current.layers = layers;
+  }, [layers]);
 
   // ---- Painting Logic ----
   const saveUndoState = useCallback(() => {
@@ -214,12 +236,15 @@ export function useWebGLPaint(
     redoStackRef.current = [];
 
     // Push clone to undo
-    const snapshot = cloneTarget(active.target);
-    undoStackRef.current.push({ layerId: active.id, target: snapshot });
-    
-    if (undoStackRef.current.length > MAX_HISTORY) {
-      const oldest = undoStackRef.current.shift();
-      if (oldest) oldest.target.dispose();
+    const targetToClone = active.isEditingMask && active.maskTarget ? active.maskTarget : active.target;
+    if (targetToClone) {
+        const snapshot = cloneTarget(targetToClone);
+        undoStackRef.current.push({ layerId: active.id, target: snapshot, isMask: !!(active.isEditingMask && active.maskTarget) });
+        
+        if (undoStackRef.current.length > MAX_HISTORY) {
+          const oldest = undoStackRef.current.shift();
+          if (oldest) oldest.target.dispose();
+        }
     }
   }, [getActiveLayer, cloneTarget]);
 
@@ -261,92 +286,119 @@ export function useWebGLPaint(
     // Stencil Setup
     let stencilTex = null;
     let stencilMat = null;
+    let stencilMode = 0; // 0 = alpha, 1 = invert, 2 = luminance
     
     if (activeStencil && activeStencil.imageUrl) {
+      if (activeStencil.applyMode === 'invert') stencilMode = 1;
+      else if (activeStencil.applyMode === 'luminance') stencilMode = 2;
       // 1. Load Stencil Texture (cached)
       if (!state.textureCache.has(activeStencil.imageUrl)) {
-          new THREE.TextureLoader().load(activeStencil.imageUrl, (t) => {
-              t.minFilter = THREE.LinearFilter;
-              t.magFilter = THREE.LinearFilter;
-              state.textureCache.set(activeStencil.imageUrl, t);
-          });
+          // Attempt to grab from DOM for synchronous load (prevents dropped first click)
+          const imgEl = document.getElementById(`overlay-img-${activeStencil.id}`) as HTMLImageElement;
+          if (imgEl && imgEl.complete && imgEl.naturalWidth > 0) {
+              const tex = new THREE.Texture(imgEl);
+              tex.minFilter = THREE.LinearFilter;
+              tex.magFilter = THREE.LinearFilter;
+              tex.needsUpdate = true;
+              state.textureCache.set(activeStencil.imageUrl, tex);
+          } else {
+              // Preemptively set to avoid spamming the loader in requestAnimationFrame
+              state.textureCache.set(activeStencil.imageUrl, undefined as any);
+              new THREE.TextureLoader().load(activeStencil.imageUrl, (t) => {
+                  t.minFilter = THREE.LinearFilter;
+                  t.magFilter = THREE.LinearFilter;
+                  state.textureCache.set(activeStencil.imageUrl, t);
+              });
+          }
       }
       stencilTex = state.textureCache.get(activeStencil.imageUrl) || null;
+      if (!stencilTex) return; // Prevent painting before stencil is loaded
       
       // 2. Compute Inverse Transform Matrix
       // The DOM overlay transforms the image relative to its center point.
       // We need to map WebGL gl_FragCoord (0..width, 0..height) back to UV space (0..1, 0..1)
       if (stencilTex && stencilTex.image) {
           const img = stencilTex.image as HTMLImageElement;
-          const imgAspect = img.width / img.height;
           // Calculate rendered dimensions based on "object-contain" constraints
           // The overlay uses max-width/max-height, so we need to infer the actual rendered box
           let w = img.width;
           let h = img.height;
-          const maxDim = 800; // From OverlayManager CSS
-          if (w > maxDim || h > maxDim) {
-             if (w > h) { w = maxDim; h = maxDim / imgAspect; }
-             else { h = maxDim; w = maxDim * imgAspect; }
+          const maxW = window.innerWidth * 0.7;
+          const maxH = window.innerHeight * 0.7;
+          if (w > maxW || h > maxH) {
+             const scaleDown = Math.min(maxW / w, maxH / h);
+             w *= scaleDown;
+             h *= scaleDown;
           }
           w *= activeStencil.scale;
           h *= activeStencil.scale;
            
-          // Create 3x3 Transformation Matrix matching the DOM
-          // Forward transform: UV (0..1) -> Local Center (-w/2..w/2) -> Rotate -> Scale -> Translate -> Screen (x, y)
-          const m = new THREE.Matrix3();
+          // Create 3x3 Transformation Matrix mapping Screen UV (0..1) to Stencil UV (0..1)
+          const m = state.stencilMatrix;
           
-          m.set(
-              1 / w, 0, 0,
-              0, 1 / h, 0,
-              0, 0, 1
-          ); // Scale from Pixel to UV
-          
-          const angleRad = activeStencil.rotation * (Math.PI / 180);
-          const c = Math.cos(-angleRad); // Inverse rotation
-          const s = Math.sin(-angleRad);
-          const rotM = new THREE.Matrix3().set(
-              c, -s, 0,
-              s, c, 0,
-              0, 0, 1
-          );
-          m.multiply(rotM);
-          
-          const trM = new THREE.Matrix3().set(
-              1, 0, -activeStencil.x + (w/2 * c - h/2 * s),
-              0, 1, -activeStencil.y + (w/2 * s + h/2 * c),
-              0, 0, 1
-          );
-          
-          m.multiply(trM);
+          const rect = gl.domElement.getBoundingClientRect();
+          const canvasW = rect.width;
+          const canvasH = rect.height;
 
-          // We actually build it simpler by doing the inverse sequence manually
-          // 1. Move pixel to origin relative to stencil center
-          // 2. Reverse rotation
-          // 3. Reverse scale
-          // 4. Move coordinates from center (-0.5..0.5) to UV (0..1)
+          // Target logic: stencilUV = CenterToUV * ScaleInv * RotateInv * TranslateInv * ScreenPixels
           
-          state.stencilMatrix.set(
-             1, 0, -activeStencil.x,
-             0, 1, -(window.innerHeight - activeStencil.y), // Flip Y because gl_FragCoord is bottom-left, DOM is top-left
-             0, 0, 1
+          // 1. Convert Screen UV (WebGL: y=0 at bottom) to Screen Pixels (DOM: y=0 at top)
+          const toPixels = new THREE.Matrix3().set(
+            canvasW, 0, 0,
+            0, -canvasH, canvasH,
+            0, 0, 1
           );
           
-          const rotInversed = new THREE.Matrix3().set(c, s, 0, -s, c, 0, 0, 0, 1); // Reverse rotation
-          state.stencilMatrix.premultiply(rotInversed);
+          // 2. Translate from screen origin to Stencil center
+          const trInv = new THREE.Matrix3().set(
+            1, 0, -activeStencil.x,
+            0, 1, -activeStencil.y,
+            0, 0, 1
+          );
+
+          // 3. Inverse Rotation (Clockwise in DOM -> Negate angle)
+          const angleRad = activeStencil.rotation * (Math.PI / 180);
+          const c = Math.cos(-angleRad);
+          const s = Math.sin(-angleRad);
+          // Inverse of CW rotation is CCW rotation
+          const rotInv = new THREE.Matrix3().set(
+            c, -s, 0,
+            s,  c, 0,
+            0,  0, 1
+          );
+
+          // 4. Inverse Scale (to normalize dimensions)
+          const scaleInv = new THREE.Matrix3().set(
+            1/w, 0, 0,
+            0, 1/h, 0,
+            0, 0, 1
+          );
+
+          // 5. Convert from normalized local [-0.5, 0.5] to UV [0, 1]
+          // Reminder: DOM local y goes down, but WebGL UV y goes up
+          const toUV = new THREE.Matrix3().set(
+            1,  0, 0.5,
+            0, -1, 0.5,
+            0,  0, 1
+          );
+
+          m.identity();
+          m.multiply(toUV);
+          m.multiply(scaleInv);
+          m.multiply(rotInv);
+          m.multiply(trInv);
+          m.multiply(toPixels);
           
-          const scaleInversed = new THREE.Matrix3().set(1/w, 0, 0, 0, 1/h, 0, 0, 0, 1);
-          state.stencilMatrix.premultiply(scaleInversed);
-          
-          const centerToUv = new THREE.Matrix3().set(1, 0, 0.5, 0, 1, 0.5, 0, 0, 1);
-          state.stencilMatrix.premultiply(centerToUv);
-          
-          stencilMat = state.stencilMatrix;
+          stencilMat = m;
       }
     }
 
+    // View-Projection Matrix
+    const vpMatrix = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+
     state.brushMaterial.setBrush(
-      color, 
-      mode === 'erase' ? 1.0 : opacity, 
+      mode === 'erase' ? 'erase' : color, 
+      opacity, 
       worldPos, 
       worldRadius, 
       hardness, 
@@ -355,13 +407,16 @@ export function useWebGLPaint(
       normal,
       angle,
       stencilTex,
-      stencilMat
+      stencilMat,
+      vpMatrix,
+      stencilMode
     );
     
     // Render
     const oldRT = gl.getRenderTarget();
     gl.autoClear = false;
-    gl.setRenderTarget(activeLayer.target);
+    const targetRT = (activeLayer.isEditingMask && activeLayer.maskTarget) ? activeLayer.maskTarget : activeLayer.target;
+    gl.setRenderTarget(targetRT);
 
     const renderDecal = () => {
       if (groupRef.current) {
@@ -394,16 +449,23 @@ export function useWebGLPaint(
         else if (axis === 'y') { mirroredPos.y *= -1; mirroredNormal.y *= -1; }
         else if (axis === 'z') { mirroredPos.z *= -1; mirroredNormal.z *= -1; }
         
+        // View-Projection Matrix
+        const vpMatrix = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+
         state.brushMaterial.setBrush(
-          color, 
-          brushSettings.mode === 'erase' ? 1.0 : opacity, 
+          brushSettings.mode === 'erase' ? 'erase' : color, 
+          opacity, 
           mirroredPos, 
           worldRadius, 
           hardness, 
           type === 'square',
           brushTex,
           mirroredNormal,
-          angle
+          angle,
+          stencilTex,
+          stencilMat,
+          vpMatrix,
+          stencilMode
         );
         renderDecal();
       } 
@@ -445,16 +507,23 @@ export function useWebGLPaint(
             radialNormal.set(nx, ny, normal.z);
           }
           
+          // View-Projection Matrix
+          const vpMatrix = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
+
           state.brushMaterial.setBrush(
-            color, 
-            brushSettings.mode === 'erase' ? 1.0 : opacity, 
+            brushSettings.mode === 'erase' ? 'erase' : color, 
+            opacity, 
             radialPos, 
             worldRadius, 
             hardness, 
             type === 'square',
             brushTex,
             radialNormal,
-            angle
+            angle,
+            stencilTex,
+            stencilMat,
+            vpMatrix,
+            stencilMode
           );
           renderDecal();
         }
@@ -464,13 +533,18 @@ export function useWebGLPaint(
     gl.setRenderTarget(oldRT);
     gl.autoClear = true;
     state.needsComposite = true;
-  }, [brushSettings, gl]);
+  }, [brushSettings, gl, activeStencil, camera, canvasSize.height, groupRef]);
 
   const startPainting = useCallback((intersection: THREE.Intersection, pressure: number = 1.0) => {
     const state = stateRef.current;
     if (!groupRef.current) return;
     
     state.isPainting = true;
+    
+    if (onColorPaintedRef.current) {
+      onColorPaintedRef.current(brushSettings.color);
+    }
+
     
     if (brushSettings.lazyMouse) {
       state.lazyPoint.copy(intersection.point);
@@ -496,7 +570,7 @@ export function useWebGLPaint(
 
       drawStamp(intersection.point, activeLine, finalPressure, normal, angle);
     }
-  }, [getActiveLayer, drawStamp, saveUndoState, groupRef]);
+  }, [getActiveLayer, drawStamp, saveUndoState, groupRef, onColorPaintedRef, brushSettings]);
 
   const paint = useCallback((intersection: THREE.Intersection, targetPressure: number = 1.0) => {
     const state = stateRef.current;
@@ -564,7 +638,7 @@ export function useWebGLPaint(
 
     state.lastHitPoint.copy(currentPoint);
     state.lastPressure = targetPressure;
-  }, [brushSettings.size, brushSettings.spacing, brushSettings.lazyMouse, brushSettings.lazyRadius, drawStamp, getActiveLayer, camera, canvasSize.height]);
+  }, [brushSettings.size, brushSettings.spacing, brushSettings.lazyMouse, brushSettings.lazyRadius, brushSettings.type, brushSettings.jitterAngle, brushSettings.jitterOpacity, drawStamp, getActiveLayer, camera, canvasSize.height]);
 
   const stopPainting = useCallback(() => {
     stateRef.current.isPainting = false;
@@ -611,7 +685,8 @@ export function useWebGLPaint(
   // ---- RAF Compositor ----
   const compositeAllLayers = useCallback(() => {
     const state = stateRef.current;
-    if (!state.compositeTarget || layers.length === 0) return;
+    const compositeLayers = state.layers;
+    if (!state.compositeTarget || compositeLayers.length === 0) return;
 
     const oldRT = gl.getRenderTarget();
     // --- Render UV Mask if needed ---
@@ -644,9 +719,10 @@ export function useWebGLPaint(
     gl.clear();
 
     // Render layers back-to-front (as index 0 is visually the top layer in UI)
-    for (let i = layers.length - 1; i >= 0; i--) {
-      const layer = layers[i];
-      if (!layer.visible || layer.isFolder || !layer.target) continue;
+    for (let i = compositeLayers.length - 1; i >= 0; i--) {
+      const layer = compositeLayers[i];
+      if (layer.isFolder || !layer.target) continue;
+      if (!isLayerVisuallyVisible(layer, compositeLayers)) continue;
       
       let mat = state.compositeMaterials.get(layer.id);
       if (!mat) {
@@ -654,14 +730,9 @@ export function useWebGLPaint(
         state.compositeMaterials.set(layer.id, mat);
       }
       
-      // Check for clipping mask
-      if (layer.clippingParentId) {
-          const parentLayer = layers.find(l => l.id === layer.clippingParentId);
-          if (parentLayer && parentLayer.target) {
-              mat.setLayerClipped(layer.target.texture, parentLayer.target.texture, layer.opacity, layer.blendMode);
-          } else {
-              mat.setLayer(layer.target.texture, layer.opacity, layer.blendMode);
-          }
+      // Check for layer mask
+      if (layer.maskEnabled && layer.maskTarget) {
+          mat.setLayerMasked(layer.target.texture, layer.maskTarget.texture, layer.opacity, layer.blendMode);
       } else {
           mat.setLayer(layer.target.texture, layer.opacity, layer.blendMode);
       }
@@ -693,7 +764,7 @@ export function useWebGLPaint(
     state.needsComposite = false;
     
     // We handle SyncPreview separately in the loop for staggering
-  }, [gl, layers]);
+  }, [gl, groupRef, layers]);
 
   useEffect(() => {
     let animId: number;
@@ -711,7 +782,6 @@ export function useWebGLPaint(
     loop();
     return () => cancelAnimationFrame(animId);
   }, [compositeAllLayers, syncPreviewCanvas]);
-
   useEffect(() => {
     return () => {
       const state = stateRef.current;
@@ -725,6 +795,28 @@ export function useWebGLPaint(
       state.previewBlitMaterial?.dispose();
       state.compositeMaterials.forEach(m => m.dispose());
     };
+  }, []);
+
+  // Check if a layer is visible by traversing up its folder parents
+  const isLayerVisuallyVisible = useCallback((layer: GPULayer, allLayers: GPULayer[]) => {
+    if (!layer.visible) return false;
+    
+    let current = layer;
+    const visited = new Set<string>([layer.id]);
+    
+    while (current.parentId) {
+      if (visited.has(current.parentId)) break; // Cycle detection
+      
+      const parentId = current.parentId;
+      const parent = allLayers.find(l => l.id === parentId);
+      
+      if (!parent) break;
+      if (!parent.visible) return false;
+      
+      visited.add(parentId);
+      current = parent;
+    }
+    return true;
   }, []);
 
   // Sync geometry UV masks when parts change
@@ -751,49 +843,199 @@ export function useWebGLPaint(
   const texture = stateRef.current.dilatedTarget?.texture || null;
   const previewCanvas = stateRef.current.previewCanvas;
 
+  const addFolder = useCallback((nameArg: any = 'New Folder') => {
+    const name = (typeof nameArg === 'string') ? nameArg : 'New Folder';
+    const newFolder: GPULayer = {
+      id: THREE.MathUtils.generateUUID(),
+      name,
+      visible: true,
+      opacity: 1,
+      blendMode: THREE.NormalBlending,
+      target: null,
+      isFolder: true
+    };
+
+    setLayers(prev => {
+      const updated = [newFolder, ...prev];
+      stateRef.current.layers = updated;
+      stateRef.current.needsComposite = true;
+      return updated;
+    });
+  }, []);
+
   // ---- Missing Layer Operations ----
   const removeLayer = useCallback((id: string) => {
     setLayers(prev => {
-      const remaining = prev.filter(l => l.id !== id);
       const layerToRemove = prev.find(l => l.id === id);
-      if (layerToRemove && layerToRemove.target) {
-        layerToRemove.target.dispose();
+      if (!layerToRemove) return prev;
+
+      // If it's a folder, we also remove its children
+      let idsToRemove = [id];
+      if (layerToRemove.isFolder) {
+        const getChildren = (parentId: string): string[] => {
+          const children = prev.filter(l => l.parentId === parentId);
+          let childIds = children.map(c => c.id);
+          children.forEach(c => {
+            if (c.isFolder) childIds = [...childIds, ...getChildren(c.id)];
+          });
+          return childIds;
+        };
+        idsToRemove = [...idsToRemove, ...getChildren(id)];
       }
+
+      const remaining = prev.filter(l => !idsToRemove.includes(l.id));
+      stateRef.current.layers = remaining;
       
-      if (activeLayerId === id && remaining.length > 0) {
-        setActiveLayerId(remaining[remaining.length - 1].id);
-      } else if (remaining.length === 0) {
-        setActiveLayerId(null);
+      prev.forEach(l => {
+        if (idsToRemove.includes(l.id)) {
+          if (l.target) l.target.dispose();
+          if (l.maskTarget) l.maskTarget.dispose();
+        }
+      });
+      
+      if (activeLayerId && idsToRemove.includes(activeLayerId)) {
+        if (remaining.length > 0) {
+          // Find first non-folder layer to activate
+          const firstLayer = remaining.find(l => !l.isFolder);
+          setActiveLayerId(firstLayer ? firstLayer.id : null);
+        } else {
+          setActiveLayerId(null);
+        }
       }
+      stateRef.current.needsComposite = true;
       return remaining;
     });
-    stateRef.current.needsComposite = true;
   }, [activeLayerId]);
 
   const updateLayer = useCallback((id: string, updates: Partial<GPULayer>) => {
-    setLayers(prev => prev.map(l => (l.id === id ? { ...l, ...updates } : l)));
-    if (updates.visible !== undefined || updates.opacity !== undefined || updates.blendMode !== undefined) {
+    setLayers(prev => {
+      const updated = prev.map(l => (l.id === id ? { ...l, ...updates } : l));
+      stateRef.current.layers = updated;
+      if (updates.visible !== undefined || updates.opacity !== undefined || updates.blendMode !== undefined || updates.parentId !== undefined || updates.maskEnabled !== undefined) {
+        stateRef.current.needsComposite = true;
+      }
+      return updated;
+    });
+  }, []);
+
+  const createLayerMask = useCallback((id: string) => {
+    const state = stateRef.current;
+    
+    setLayers(prev => {
+      const layer = prev.find(l => l.id === id);
+      if (!layer || layer.maskTarget) return prev;
+      
+      const newMaskTarget = new THREE.WebGLRenderTarget(state.textureSize, state.textureSize, {
+        minFilter: THREE.LinearFilter,
+        magFilter: THREE.LinearFilter,
+        format: THREE.RGBAFormat,
+        generateMipmaps: false,
+      });
+
+      const oldRT = gl.getRenderTarget();
+      gl.setRenderTarget(newMaskTarget);
+      gl.setClearColor(0xffffff, 1); // White means fully visible
+      gl.clear();
+      gl.setRenderTarget(oldRT);
+
+      const updated = prev.map(l => 
+        l.id === id ? { ...l, maskTarget: newMaskTarget, maskEnabled: true, isEditingMask: true } : l
+      );
+      state.layers = updated;
+      state.needsComposite = true;
+      return updated;
+    });
+  }, [gl]);
+
+  const deleteLayerMask = useCallback((id: string) => {
+    setLayers(prev => {
+      const layer = prev.find(l => l.id === id);
+      if (!layer || !layer.maskTarget) return prev;
+      
+      layer.maskTarget.dispose();
+      
+      const updated = prev.map(l => 
+        l.id === id ? { ...l, maskTarget: null, maskEnabled: false, isEditingMask: false } : l
+      );
+      stateRef.current.layers = updated;
       stateRef.current.needsComposite = true;
-    }
+      return updated;
+    });
+  }, []);
+
+  const toggleLayerMask = useCallback((id: string) => {
+    setLayers(prev => {
+      const layer = prev.find(l => l.id === id);
+      if (!layer || !layer.maskTarget) return prev; // Cannot toggle if no mask exists
+
+      const updated = prev.map(l => 
+        l.id === id ? { ...l, maskEnabled: !l.maskEnabled } : l
+      );
+      stateRef.current.layers = updated;
+      stateRef.current.needsComposite = true;
+      return updated;
+    });
+  }, []);
+
+  const setEditingMask = useCallback((id: string, isEditingMask: boolean) => {
+    setLayers(prev => {
+      const updated = prev.map(l => 
+        l.id === id ? { ...l, isEditingMask } : l
+      );
+      stateRef.current.layers = updated;
+      return updated;
+    });
   }, []);
 
   const moveLayer = useCallback((id: string, direction: 'up' | 'down') => {
     setLayers(prev => {
       const idx = prev.findIndex(l => l.id === id);
       if (idx < 0) return prev;
+      let next = [...prev];
       if (direction === 'up' && idx > 0) {
-        const next = [...prev];
         [next[idx - 1], next[idx]] = [next[idx], next[idx - 1]];
-        return next;
-      }
-      if (direction === 'down' && idx < prev.length - 1) {
-        const next = [...prev];
+      } else if (direction === 'down' && idx < prev.length - 1) {
         [next[idx + 1], next[idx]] = [next[idx], next[idx + 1]];
-        return next;
       }
-      return prev;
+      stateRef.current.layers = next;
+      stateRef.current.needsComposite = true;
+      return next;
     });
-    stateRef.current.needsComposite = true;
+  }, []);
+
+  const reorderLayer = useCallback((sourceId: string, targetId: string | null, newParentId?: string) => {
+    setLayers(prev => {
+      const sourceIdx = prev.findIndex(l => l.id === sourceId);
+      if (sourceIdx < 0) return prev;
+      
+      const newLayers = [...prev];
+      const sourceLayer = newLayers[sourceIdx];
+      
+      // Prevent nesting folders or putting folders inside layers
+      const updatedParentId = sourceLayer.isFolder ? undefined : newParentId;
+      
+      const [movedLayer] = newLayers.splice(sourceIdx, 1);
+      movedLayer.parentId = updatedParentId || undefined;
+      
+      if (targetId === null) {
+        newLayers.push(movedLayer);
+      } else {
+        const targetIdx = newLayers.findIndex(l => l.id === targetId);
+        const targetLayer = newLayers[targetIdx];
+        
+        // If dropping ON a folder AND specify it as parent, place it AFTER (inside)
+        if (targetLayer.isFolder && newParentId === targetId) {
+          newLayers.splice(targetIdx + 1, 0, movedLayer);
+        } else {
+          // Place BEFORE the target (useful for ejecting or simple reordering)
+          newLayers.splice(targetIdx, 0, movedLayer);
+        }
+      }
+      
+      stateRef.current.layers = newLayers;
+      stateRef.current.needsComposite = true;
+      return newLayers;
+    });
   }, []);
 
   const clearCanvas = useCallback(() => {
@@ -801,8 +1043,14 @@ export function useWebGLPaint(
     if (!active) return;
     saveUndoState();
 
+    const targetRT = (active.isEditingMask && active.maskTarget) ? active.maskTarget : active.target;
+    if (!targetRT) return;
+
     const oldRT = gl.getRenderTarget();
-    gl.setRenderTarget(active.target);
+    gl.setRenderTarget(targetRT);
+    
+    // For masks, a clear sets alpha to 0 (fully hidden)
+    // For layers, a clear sets also to transparent black so the white background shows through
     gl.setClearColor(0x000000, 0);
     gl.clear();
     gl.setRenderTarget(oldRT);
@@ -815,8 +1063,11 @@ export function useWebGLPaint(
     if (!active) return;
     saveUndoState();
 
+    const targetRT = (active.isEditingMask && active.maskTarget) ? active.maskTarget : active.target;
+    if (!targetRT) return;
+
     const oldRT = gl.getRenderTarget();
-    gl.setRenderTarget(active.target);
+    gl.setRenderTarget(targetRT);
 
     const fillMat = new THREE.MeshBasicMaterial({
       color: brushSettings.color,
@@ -842,12 +1093,16 @@ export function useWebGLPaint(
     stateRef.current.needsComposite = true;
   }, [getActiveLayer, saveUndoState, gl, brushSettings]);
 
-  const restoreSnapshotToLayer = useCallback((layerId: string, sourceTarget: THREE.WebGLRenderTarget) => {
+  const restoreSnapshotToLayer = useCallback((layerId: string, sourceTarget: THREE.WebGLRenderTarget, isMask: boolean) => {
     const layer = layers.find(l => l.id === layerId);
     if (!layer) return;
 
+    const targetToRestore = isMask ? layer.maskTarget : layer.target;
+    if (!targetToRestore) return;
+
     const oldRT = gl.getRenderTarget();
-    gl.setRenderTarget(layer.target);
+    gl.setRenderTarget(targetToRestore);
+    // Masks clear to alpha 0 = fully hidden, colors clear to 0
     gl.setClearColor(0x000000, 0);
     gl.clear();
 
@@ -873,40 +1128,42 @@ export function useWebGLPaint(
   const undo = useCallback(() => {
     if (undoStackRef.current.length === 0) return;
     
-    const activeLayer = getActiveLayer();
+    const step = undoStackRef.current.pop();
+    if (!step) return;
+
+    const activeLayer = layers.find(l => l.id === step.layerId);
     if (!activeLayer) return;
 
     // Save current to redo before undoing
-    if (activeLayer.target) {
-        const currentState = cloneTarget(activeLayer.target);
-        redoStackRef.current.push({ layerId: activeLayer.id, target: currentState });
+    const targetToClone = step.isMask ? activeLayer.maskTarget : activeLayer.target;
+    if (targetToClone) {
+        const currentState = cloneTarget(targetToClone);
+        redoStackRef.current.push({ layerId: activeLayer.id, target: currentState, isMask: step.isMask });
     }
 
-    const step = undoStackRef.current.pop();
-    if (step) {
-      restoreSnapshotToLayer(step.layerId, step.target);
-      step.target.dispose(); // clean up memory after use
-    }
-  }, [getActiveLayer, cloneTarget, restoreSnapshotToLayer]);
+    restoreSnapshotToLayer(step.layerId, step.target, step.isMask);
+    step.target.dispose(); // clean up memory after use
+  }, [layers, cloneTarget, restoreSnapshotToLayer]);
 
   const redo = useCallback(() => {
     if (redoStackRef.current.length === 0) return;
     
-    const activeLayer = getActiveLayer();
+    const step = redoStackRef.current.pop();
+    if (!step) return;
+
+    const activeLayer = layers.find(l => l.id === step.layerId);
     if (!activeLayer) return;
 
     // Save current to undo before redoing
-    if (activeLayer.target) {
-        const currentState = cloneTarget(activeLayer.target);
-        undoStackRef.current.push({ layerId: activeLayer.id, target: currentState });
+    const targetToClone = step.isMask ? activeLayer.maskTarget : activeLayer.target;
+    if (targetToClone) {
+        const currentState = cloneTarget(targetToClone);
+        undoStackRef.current.push({ layerId: activeLayer.id, target: currentState, isMask: step.isMask });
     }
 
-    const step = redoStackRef.current.pop();
-    if (step) {
-      restoreSnapshotToLayer(step.layerId, step.target);
-      step.target.dispose();
-    }
-  }, [getActiveLayer, cloneTarget, restoreSnapshotToLayer]);
+    restoreSnapshotToLayer(step.layerId, step.target, step.isMask);
+    step.target.dispose();
+  }, [layers, cloneTarget, restoreSnapshotToLayer]);
 
   const exportTexture = useCallback((format: 'png' | 'jpeg') => {
     const state = stateRef.current;
@@ -932,13 +1189,8 @@ export function useWebGLPaint(
       let mat = state.compositeMaterials.get(layer.id);
       if (mat) {
         // Re-apply properties in case they were modified elsewhere before export
-        if (layer.clippingParentId) {
-            const parentLayer = layers.find(l => l.id === layer.clippingParentId);
-            if (parentLayer && parentLayer.target) {
-                mat.setLayerClipped(layer.target.texture, parentLayer.target.texture, layer.opacity, layer.blendMode);
-            } else {
-                mat.setLayer(layer.target.texture, layer.opacity, layer.blendMode);
-            }
+        if (layer.maskEnabled && layer.maskTarget) {
+            mat.setLayerMasked(layer.target.texture, layer.maskTarget.texture, layer.opacity, layer.blendMode);
         } else {
             mat.setLayer(layer.target.texture, layer.opacity, layer.blendMode);
         }
@@ -1032,15 +1284,21 @@ export function useWebGLPaint(
     layers,
     activeLayerId,
     addLayer,
+    addFolder,
     removeLayer,
     updateLayer,
     setLayerActive: setActiveLayerId,
     moveLayer,
+    reorderLayer,
     clearCanvas,
     fillCanvas,
     undo,
     redo,
     exportTexture,
     sampleColor,
+    createLayerMask,
+    deleteLayerMask,
+    toggleLayerMask,
+    setEditingMask,
   };
 }
