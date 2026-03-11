@@ -1,7 +1,7 @@
 import React, { useState, useRef, useEffect } from 'react';
 import * as THREE from 'three';
 import type { GPULayer } from '@/hooks/useWebGLPaint';
-import { Layers, Plus, Trash2, Eye, EyeOff, ArrowUp, ArrowDown } from 'lucide-react';
+import { Layers, Plus, Trash2, Eye, EyeOff, ArrowUp, ArrowDown, Download } from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
 
 interface LayerControls {
@@ -82,7 +82,7 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({ layerControls }) => {
               activeLayerId === layer.id
                 ? 'bg-zinc-800/50 border-white/20'
                 : 'bg-transparent border-white/5 hover:border-white/10'
-            }`}
+            } ${layer.clippingParentId ? 'ml-6 relative before:content-[""] before:absolute before:-left-3 before:top-1/2 before:w-2 before:h-[1px] before:bg-zinc-600' : ''}`}
           >
             <div className="flex items-center justify-between gap-2 mb-2">
               <button
@@ -177,6 +177,32 @@ export const LayersPanel: React.FC<LayersPanelProps> = ({ layerControls }) => {
                     />
                     <span className="w-8 text-right text-zinc-400 font-mono text-[10px]">{Math.round(layer.opacity * 100)}%</span>
                   </div>
+                </div>
+
+                <div className="flex items-center justify-between gap-3 pt-2 border-t border-white/5">
+                  <span className="text-zinc-500 text-[10px] uppercase font-mono tracking-wider w-16">CLIPPING</span>
+                  <button
+                    onClick={(e) => {
+                      e.stopPropagation();
+                      if (layer.clippingParentId) {
+                        updateLayer(layer.id, { clippingParentId: undefined });
+                      } else {
+                        // Clip to the layer immediately below (index + 1 since array is top-to-bottom)
+                        if (index < layers.length - 1) {
+                          updateLayer(layer.id, { clippingParentId: layers[index + 1].id });
+                        }
+                      }
+                    }}
+                    disabled={index === layers.length - 1} // Bottom layer cannot be a clipping mask
+                    className={`flex-1 py-1.5 rounded text-xs flex items-center justify-center gap-2 border transition-colors ${
+                      layer.clippingParentId 
+                        ? 'bg-zinc-700 text-white border-zinc-600 hover:bg-zinc-600' 
+                        : 'bg-zinc-900 border-white/10 text-zinc-400 hover:text-white hover:border-white/30 disabled:opacity-30'
+                    }`}
+                  >
+                    <Download className="w-3 h-3" />
+                    {layer.clippingParentId ? 'Release Mask' : 'Create Mask'}
+                  </button>
                 </div>
               </div>
             )}

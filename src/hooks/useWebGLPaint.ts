@@ -3,6 +3,8 @@ import * as THREE from 'three';
 import { useThree } from '@react-three/fiber';
 import { BrushShaderMaterial } from '../components/3d/materials/BrushShaderMaterial';
 import { DilationShaderMaterial } from '../components/3d/materials/DilationShaderMaterial';
+import { CompositeShaderMaterial } from '../components/3d/materials/CompositeShaderMaterial';
+import type { OverlayData } from '../components/ui-custom/OverlayManager';
 
 export type BrushSettings = {
   color: string;
@@ -10,8 +12,17 @@ export type BrushSettings = {
   opacity: number;
   hardness: number;
   type: 'circle' | 'square' | 'texture';
+  textureId?: string | null;
   mode: 'paint' | 'erase';
   spacing: number;
+  lazyMouse?: boolean;
+  lazyRadius?: number;
+  jitterSize?: number;
+  jitterAngle?: boolean;
+  jitterOpacity?: number;
+  symmetryMode?: 'none' | 'mirror' | 'radial';
+  symmetryAxis?: 'x' | 'y' | 'z';
+  radialPoints?: number;
 };
 
 export interface GPULayer {
@@ -20,7 +31,10 @@ export interface GPULayer {
   visible: boolean;
   opacity: number;
   blendMode: THREE.Blending;
-  target: THREE.WebGLRenderTarget;
+  target: THREE.WebGLRenderTarget | null; // Null for folders
+  isFolder?: boolean;
+  parentId?: string; // For UI organization
+  clippingParentId?: string; // For alpha masking
 }
 
 const MAX_HISTORY = 10;
@@ -28,7 +42,8 @@ const MAX_HISTORY = 10;
 export function useWebGLPaint(
   groupRef: React.RefObject<THREE.Group | null>,
   brushSettings: BrushSettings,
-  updateDependencies: any[] = []
+  updateDependencies: any[] = [],
+  activeStencil?: OverlayData
 ) {
   const { gl, camera, size: canvasSize } = useThree();
   const [layers, setLayers] = useState<GPULayer[]>([]);
@@ -45,7 +60,7 @@ export function useWebGLPaint(
     
     decalScene: new THREE.Scene(),
     decalCamera: new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1),
-    decalMesh: new THREE.Mesh(),
+    decalMesh: new THREE.Mesh(new THREE.PlaneGeometry(2, 2)), // NDC quad
     brushMaterial: new BrushShaderMaterial(),
     uvMaskMaterial: new THREE.ShaderMaterial({
       vertexShader: `void main() { gl_Position = vec4(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0, 0.0, 1.0); }`,
@@ -59,7 +74,8 @@ export function useWebGLPaint(
     compositeScene: new THREE.Scene(),
     compositeCamera: new THREE.OrthographicCamera(-1, 1, 1, -1, 0, 1),
     compositeQuad: new THREE.Mesh(new THREE.PlaneGeometry(2, 2)),
-    compositeMaterials: new Map<string, THREE.MeshBasicMaterial>(),
+    compositeMaterials: new Map<string, CompositeShaderMaterial>(),
+    textureCache: new Map<string, THREE.Texture>(),
 
     lastHitPoint: new THREE.Vector3(),
     lastPressure: 1.0,
@@ -69,6 +85,12 @@ export function useWebGLPaint(
     previewBlitMaterial: null as THREE.MeshBasicMaterial | null,
     lastSyncTime: 0,
     staggerStep: 0, // 0: Idle, 1: Full Dilation, 2: Sync Preview
+    lazyPoint: new THREE.Vector3(),
+    hasLazyPoint: false,
+    
+    // Stencil State
+    stencilTexture: null as THREE.Texture | null,
+    stencilMatrix: new THREE.Matrix3()
   });
 
   const undoStackRef = useRef<{ layerId: string; target: THREE.WebGLRenderTarget }[]>([]);
@@ -185,7 +207,7 @@ export function useWebGLPaint(
   // ---- Painting Logic ----
   const saveUndoState = useCallback(() => {
     const active = getActiveLayer();
-    if (!active) return;
+    if (!active || !active.target) return;
     
     // Clear redo stack on new action
     redoStackRef.current.forEach(item => item.target.dispose());
@@ -201,13 +223,24 @@ export function useWebGLPaint(
     }
   }, [getActiveLayer, cloneTarget]);
 
-  const drawStamp = useCallback((worldPos: THREE.Vector3, activeLayer: GPULayer, pressure: number = 1.0) => {
+  const drawStamp = useCallback((
+    worldPos: THREE.Vector3, 
+    activeLayer: GPULayer, 
+    pressure: number = 1.0, 
+    normal: THREE.Vector3 = new THREE.Vector3(0, 0, 1),
+    angle: number = 0.0
+  ) => {
     const state = stateRef.current;
-    const { color, opacity, hardness, type, mode, size } = brushSettings;
+    const { color, opacity, hardness, type, mode, size, jitterSize } = brushSettings;
 
     const dist = camera.position.distanceTo(worldPos);
     let worldRadius = 0.1;
-    const dynamicSize = size * Math.max(0.05, pressure);
+    
+    // Apply Size Jitter
+    let dynamicSize = size * Math.max(0.05, pressure);
+    if (jitterSize) {
+      dynamicSize *= (1.0 + (Math.random() * 2.0 - 1.0) * jitterSize);
+    }
 
     if ((camera as THREE.PerspectiveCamera).isPerspectiveCamera) {
       const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
@@ -220,44 +253,216 @@ export function useWebGLPaint(
     }
 
     // Setup material for decal
-    state.brushMaterial.setBrush(color, mode === 'erase' ? 1.0 : opacity, worldPos, worldRadius, hardness, type === 'square');
+    let brushTex = null;
+    if (type === 'texture' && brushSettings.textureId) {
+      brushTex = state.textureCache.get(brushSettings.textureId) || null;
+    }
     
-    if (mode === 'erase') {
-      state.brushMaterial.blending = THREE.CustomBlending;
-      state.brushMaterial.blendEquation = THREE.AddEquation;
-      state.brushMaterial.blendSrc = THREE.ZeroFactor;
-      state.brushMaterial.blendDst = THREE.OneMinusSrcAlphaFactor;
-    } else {
-      state.brushMaterial.blending = THREE.NormalBlending;
+    // Stencil Setup
+    let stencilTex = null;
+    let stencilMat = null;
+    
+    if (activeStencil && activeStencil.imageUrl) {
+      // 1. Load Stencil Texture (cached)
+      if (!state.textureCache.has(activeStencil.imageUrl)) {
+          new THREE.TextureLoader().load(activeStencil.imageUrl, (t) => {
+              t.minFilter = THREE.LinearFilter;
+              t.magFilter = THREE.LinearFilter;
+              state.textureCache.set(activeStencil.imageUrl, t);
+          });
+      }
+      stencilTex = state.textureCache.get(activeStencil.imageUrl) || null;
+      
+      // 2. Compute Inverse Transform Matrix
+      // The DOM overlay transforms the image relative to its center point.
+      // We need to map WebGL gl_FragCoord (0..width, 0..height) back to UV space (0..1, 0..1)
+      if (stencilTex && stencilTex.image) {
+          const img = stencilTex.image as HTMLImageElement;
+          const imgAspect = img.width / img.height;
+          // Calculate rendered dimensions based on "object-contain" constraints
+          // The overlay uses max-width/max-height, so we need to infer the actual rendered box
+          let w = img.width;
+          let h = img.height;
+          const maxDim = 800; // From OverlayManager CSS
+          if (w > maxDim || h > maxDim) {
+             if (w > h) { w = maxDim; h = maxDim / imgAspect; }
+             else { h = maxDim; w = maxDim * imgAspect; }
+          }
+          w *= activeStencil.scale;
+          h *= activeStencil.scale;
+           
+          // Create 3x3 Transformation Matrix matching the DOM
+          // Forward transform: UV (0..1) -> Local Center (-w/2..w/2) -> Rotate -> Scale -> Translate -> Screen (x, y)
+          const m = new THREE.Matrix3();
+          
+          m.set(
+              1 / w, 0, 0,
+              0, 1 / h, 0,
+              0, 0, 1
+          ); // Scale from Pixel to UV
+          
+          const angleRad = activeStencil.rotation * (Math.PI / 180);
+          const c = Math.cos(-angleRad); // Inverse rotation
+          const s = Math.sin(-angleRad);
+          const rotM = new THREE.Matrix3().set(
+              c, -s, 0,
+              s, c, 0,
+              0, 0, 1
+          );
+          m.multiply(rotM);
+          
+          const trM = new THREE.Matrix3().set(
+              1, 0, -activeStencil.x + (w/2 * c - h/2 * s),
+              0, 1, -activeStencil.y + (w/2 * s + h/2 * c),
+              0, 0, 1
+          );
+          
+          m.multiply(trM);
+
+          // We actually build it simpler by doing the inverse sequence manually
+          // 1. Move pixel to origin relative to stencil center
+          // 2. Reverse rotation
+          // 3. Reverse scale
+          // 4. Move coordinates from center (-0.5..0.5) to UV (0..1)
+          
+          state.stencilMatrix.set(
+             1, 0, -activeStencil.x,
+             0, 1, -(window.innerHeight - activeStencil.y), // Flip Y because gl_FragCoord is bottom-left, DOM is top-left
+             0, 0, 1
+          );
+          
+          const rotInversed = new THREE.Matrix3().set(c, s, 0, -s, c, 0, 0, 0, 1); // Reverse rotation
+          state.stencilMatrix.premultiply(rotInversed);
+          
+          const scaleInversed = new THREE.Matrix3().set(1/w, 0, 0, 0, 1/h, 0, 0, 0, 1);
+          state.stencilMatrix.premultiply(scaleInversed);
+          
+          const centerToUv = new THREE.Matrix3().set(1, 0, 0.5, 0, 1, 0.5, 0, 0, 1);
+          state.stencilMatrix.premultiply(centerToUv);
+          
+          stencilMat = state.stencilMatrix;
+      }
     }
 
-    // Render directly to the layer's target
+    state.brushMaterial.setBrush(
+      color, 
+      mode === 'erase' ? 1.0 : opacity, 
+      worldPos, 
+      worldRadius, 
+      hardness, 
+      type === 'square',
+      brushTex,
+      normal,
+      angle,
+      stencilTex,
+      stencilMat
+    );
+    
+    // Render
     const oldRT = gl.getRenderTarget();
     gl.autoClear = false;
     gl.setRenderTarget(activeLayer.target);
 
-    if (groupRef.current) {
-      groupRef.current.traverse((child) => {
-        if (child instanceof THREE.Mesh && child.visible) {
-          state.decalMesh.geometry = child.geometry;
+    const renderDecal = () => {
+      if (groupRef.current) {
+        groupRef.current.traverse((child) => {
+          if (child instanceof THREE.Mesh && child.visible) {
+            state.decalMesh.geometry = child.geometry;
+            child.matrixWorld.decompose(
+              state.decalMesh.position,
+              state.decalMesh.quaternion,
+              state.decalMesh.scale
+            );
+            gl.render(state.decalScene, state.decalCamera);
+          }
+        });
+      }
+    };
+
+    renderDecal();
+
+    // Advanced Symmetry
+    if (brushSettings.symmetryMode && brushSettings.symmetryMode !== 'none') {
+      const mode = brushSettings.symmetryMode;
+      const axis = brushSettings.symmetryAxis || 'x';
+      
+      if (mode === 'mirror') {
+        const mirroredPos = worldPos.clone();
+        const mirroredNormal = normal.clone();
+        
+        if (axis === 'x') { mirroredPos.x *= -1; mirroredNormal.x *= -1; }
+        else if (axis === 'y') { mirroredPos.y *= -1; mirroredNormal.y *= -1; }
+        else if (axis === 'z') { mirroredPos.z *= -1; mirroredNormal.z *= -1; }
+        
+        state.brushMaterial.setBrush(
+          color, 
+          brushSettings.mode === 'erase' ? 1.0 : opacity, 
+          mirroredPos, 
+          worldRadius, 
+          hardness, 
+          type === 'square',
+          brushTex,
+          mirroredNormal,
+          angle
+        );
+        renderDecal();
+      } 
+      else if (mode === 'radial') {
+        const points = brushSettings.radialPoints || 4;
+        const angleStep = (Math.PI * 2) / points;
+        
+        for (let i = 1; i < points; i++) {
+          const radialPos = worldPos.clone();
+          const radialNormal = normal.clone();
+          const theta = angleStep * i;
           
-          // Decompose the child's true World matrix into the decalMesh's local SRT
-          // This ensures that when gl.render() implicitly triggers updateMatrixWorld(),
-          // the matrix does not revert to Identity!
-          child.matrixWorld.decompose(
-            state.decalMesh.position,
-            state.decalMesh.quaternion,
-            state.decalMesh.scale
+          if (axis === 'y') {
+            // Rotate around Y axis
+            const x = worldPos.x * Math.cos(theta) - worldPos.z * Math.sin(theta);
+            const z = worldPos.x * Math.sin(theta) + worldPos.z * Math.cos(theta);
+            radialPos.set(x, worldPos.y, z);
+            
+            const nx = normal.x * Math.cos(theta) - normal.z * Math.sin(theta);
+            const nz = normal.x * Math.sin(theta) + normal.z * Math.cos(theta);
+            radialNormal.set(nx, normal.y, nz);
+          } else if (axis === 'x') {
+            // Rotate around X axis
+            const y = worldPos.y * Math.cos(theta) - worldPos.z * Math.sin(theta);
+            const z = worldPos.y * Math.sin(theta) + worldPos.z * Math.cos(theta);
+            radialPos.set(worldPos.x, y, z);
+            
+            const ny = normal.y * Math.cos(theta) - normal.z * Math.sin(theta);
+            const nz = normal.y * Math.sin(theta) + normal.z * Math.cos(theta);
+            radialNormal.set(normal.x, ny, nz);
+          } else if (axis === 'z') {
+            // Rotate around Z axis
+            const x = worldPos.x * Math.cos(theta) - worldPos.y * Math.sin(theta);
+            const y = worldPos.x * Math.sin(theta) + worldPos.y * Math.cos(theta);
+            radialPos.set(x, y, worldPos.z);
+            
+            const nx = normal.x * Math.cos(theta) - normal.y * Math.sin(theta);
+            const ny = normal.x * Math.sin(theta) + normal.y * Math.cos(theta);
+            radialNormal.set(nx, ny, normal.z);
+          }
+          
+          state.brushMaterial.setBrush(
+            color, 
+            brushSettings.mode === 'erase' ? 1.0 : opacity, 
+            radialPos, 
+            worldRadius, 
+            hardness, 
+            type === 'square',
+            brushTex,
+            radialNormal,
+            angle
           );
-          
-          gl.render(state.decalScene, state.decalCamera);
+          renderDecal();
         }
-      });
+      }
     }
 
     gl.setRenderTarget(oldRT);
     gl.autoClear = true;
-
     state.needsComposite = true;
   }, [brushSettings, gl]);
 
@@ -266,12 +471,31 @@ export function useWebGLPaint(
     if (!groupRef.current) return;
     
     state.isPainting = true;
+    
+    if (brushSettings.lazyMouse) {
+      state.lazyPoint.copy(intersection.point);
+      state.hasLazyPoint = true;
+    }
+
     state.lastHitPoint.copy(intersection.point);
     state.lastPressure = pressure;
     saveUndoState();
     
     const activeLine = getActiveLayer();
-    if (activeLine) drawStamp(intersection.point, activeLine, pressure);
+    if (activeLine) {
+      const normal = intersection.face?.normal.clone() || new THREE.Vector3(0, 0, 1);
+      if (intersection.object) normal.transformDirection(intersection.object.matrixWorld).normalize();
+      
+      let angle = brushSettings.type === 'texture' ? Math.random() * Math.PI * 2 : 0;
+      if (brushSettings.jitterAngle) angle = Math.random() * Math.PI * 2;
+      
+      let finalPressure = pressure;
+      if (brushSettings.jitterOpacity) {
+        finalPressure *= (1.0 - Math.random() * brushSettings.jitterOpacity);
+      }
+
+      drawStamp(intersection.point, activeLine, finalPressure, normal, angle);
+    }
   }, [getActiveLayer, drawStamp, saveUndoState, groupRef]);
 
   const paint = useCallback((intersection: THREE.Intersection, targetPressure: number = 1.0) => {
@@ -281,11 +505,27 @@ export function useWebGLPaint(
     const activeLayer = getActiveLayer();
     if (!activeLayer) return;
 
-    const currentPoint = intersection.point;
+    let currentPoint = intersection.point;
+
+    // --- Lazy Mouse logic ---
+    if (brushSettings.lazyMouse && state.hasLazyPoint) {
+      const lazyRadius = brushSettings.lazyRadius || 0.1;
+      const distToCursor = state.lazyPoint.distanceTo(currentPoint);
+      
+      if (distToCursor > lazyRadius) {
+        const dir = new THREE.Vector3().subVectors(currentPoint, state.lazyPoint).normalize();
+        state.lazyPoint.add(dir.multiplyScalar(distToCursor - lazyRadius));
+      }
+      currentPoint = state.lazyPoint.clone();
+    }
+
     const distance = state.lastHitPoint.distanceTo(currentPoint);
+    if (distance < 0.0001) return; // No move
     
     const distToCam = camera.position.distanceTo(currentPoint);
     let worldRadius = 0.1;
+    
+    // Base size (jitter is applied inside drawStamp)
     const dynamicSize = brushSettings.size * Math.max(0.05, targetPressure);
 
     if ((camera as THREE.PerspectiveCamera).isPerspectiveCamera) {
@@ -301,20 +541,34 @@ export function useWebGLPaint(
     const stepDist = Math.max(0.001, worldRadius * brushSettings.spacing);
     const steps = Math.ceil(distance / stepDist);
     
+    // Determine Normal
+    const normal = intersection.face?.normal.clone() || new THREE.Vector3(0, 0, 1);
+    if (intersection.object) normal.transformDirection(intersection.object.matrixWorld).normalize();
+
     // Interpolate in 3D space and pressure space
     for (let i = 1; i <= steps; i++) {
        const t = i / steps;
        const lerpPos = new THREE.Vector3().lerpVectors(state.lastHitPoint, currentPoint, t);
        const lerpPressure = THREE.MathUtils.lerp(state.lastPressure, targetPressure, t);
-       drawStamp(lerpPos, activeLayer, lerpPressure);
+       
+       let angle = brushSettings.type === 'texture' ? Math.random() * Math.PI * 2 : 0;
+       if (brushSettings.jitterAngle) angle = Math.random() * Math.PI * 2;
+       
+       let finalPressure = lerpPressure;
+       if (brushSettings.jitterOpacity) {
+         finalPressure *= (1.0 - Math.random() * brushSettings.jitterOpacity);
+       }
+       
+       drawStamp(lerpPos, activeLayer, finalPressure, normal, angle);
     }
 
     state.lastHitPoint.copy(currentPoint);
     state.lastPressure = targetPressure;
-  }, [brushSettings.size, brushSettings.spacing, drawStamp, getActiveLayer, camera, canvasSize.height]);
+  }, [brushSettings.size, brushSettings.spacing, brushSettings.lazyMouse, brushSettings.lazyRadius, drawStamp, getActiveLayer, camera, canvasSize.height]);
 
   const stopPainting = useCallback(() => {
     stateRef.current.isPainting = false;
+    stateRef.current.hasLazyPoint = false;
     stateRef.current.staggerStep = 1; // Start post-stroke cleanup staggered
     stateRef.current.needsComposite = true;
   }, []);
@@ -386,29 +640,30 @@ export function useWebGLPaint(
     gl.autoClear = false;
 
     gl.setRenderTarget(state.compositeTarget);
-    gl.setClearColor(0x000000, 0); 
+    gl.setClearColor(0xffffff, 1); 
     gl.clear();
 
     // Render layers back-to-front (as index 0 is visually the top layer in UI)
     for (let i = layers.length - 1; i >= 0; i--) {
       const layer = layers[i];
-      if (!layer.visible) continue;
+      if (!layer.visible || layer.isFolder || !layer.target) continue;
       
       let mat = state.compositeMaterials.get(layer.id);
       if (!mat) {
-        mat = new THREE.MeshBasicMaterial({ 
-          map: layer.target.texture, 
-          transparent: true,
-          opacity: layer.opacity,
-          blending: layer.blendMode,
-          depthTest: false,
-          depthWrite: false
-        });
+        mat = new CompositeShaderMaterial();
         state.compositeMaterials.set(layer.id, mat);
+      }
+      
+      // Check for clipping mask
+      if (layer.clippingParentId) {
+          const parentLayer = layers.find(l => l.id === layer.clippingParentId);
+          if (parentLayer && parentLayer.target) {
+              mat.setLayerClipped(layer.target.texture, parentLayer.target.texture, layer.opacity, layer.blendMode);
+          } else {
+              mat.setLayer(layer.target.texture, layer.opacity, layer.blendMode);
+          }
       } else {
-        mat.map = layer.target.texture;
-        mat.opacity = layer.opacity;
-        mat.blending = layer.blendMode;
+          mat.setLayer(layer.target.texture, layer.opacity, layer.blendMode);
       }
 
       state.compositeQuad.material = mat;
@@ -477,6 +732,20 @@ export function useWebGLPaint(
     stateRef.current.needsUVMaskUpdate = true;
     stateRef.current.needsComposite = true;
   }, [groupRef, ...updateDependencies]);
+  
+  // Load Texture Mask on Demand
+  useEffect(() => {
+    if (brushSettings.type === 'texture' && brushSettings.textureId) {
+      const state = stateRef.current;
+      if (!state.textureCache.has(brushSettings.textureId)) {
+        new THREE.TextureLoader().load(brushSettings.textureId, (tex) => {
+          tex.minFilter = THREE.LinearFilter;
+          tex.magFilter = THREE.LinearFilter;
+          state.textureCache.set(brushSettings.textureId!, tex);
+        });
+      }
+    }
+  }, [brushSettings.type, brushSettings.textureId]);
 
   // Provide texture out
   const texture = stateRef.current.dilatedTarget?.texture || null;
@@ -487,7 +756,7 @@ export function useWebGLPaint(
     setLayers(prev => {
       const remaining = prev.filter(l => l.id !== id);
       const layerToRemove = prev.find(l => l.id === id);
-      if (layerToRemove) {
+      if (layerToRemove && layerToRemove.target) {
         layerToRemove.target.dispose();
       }
       
@@ -608,8 +877,10 @@ export function useWebGLPaint(
     if (!activeLayer) return;
 
     // Save current to redo before undoing
-    const currentState = cloneTarget(activeLayer.target);
-    redoStackRef.current.push({ layerId: activeLayer.id, target: currentState });
+    if (activeLayer.target) {
+        const currentState = cloneTarget(activeLayer.target);
+        redoStackRef.current.push({ layerId: activeLayer.id, target: currentState });
+    }
 
     const step = undoStackRef.current.pop();
     if (step) {
@@ -625,8 +896,10 @@ export function useWebGLPaint(
     if (!activeLayer) return;
 
     // Save current to undo before redoing
-    const currentState = cloneTarget(activeLayer.target);
-    undoStackRef.current.push({ layerId: activeLayer.id, target: currentState });
+    if (activeLayer.target) {
+        const currentState = cloneTarget(activeLayer.target);
+        undoStackRef.current.push({ layerId: activeLayer.id, target: currentState });
+    }
 
     const step = redoStackRef.current.pop();
     if (step) {
@@ -637,19 +910,69 @@ export function useWebGLPaint(
 
   const exportTexture = useCallback((format: 'png' | 'jpeg') => {
     const state = stateRef.current;
-    if (!state.dilatedTarget) return null;
-    
+    if (!state.compositeTarget) return null;
+
+    const oldRT = gl.getRenderTarget();
+    const oldAutoClear = gl.autoClear;
+    gl.autoClear = false;
+
+    // --- Special Export Pass (Transparent if PNG) ---
+    gl.setRenderTarget(state.compositeTarget);
+    if (format === 'png') {
+        gl.setClearColor(0x000000, 0); 
+    } else {
+        gl.setClearColor(0xffffff, 1);
+    }
+    gl.clear();
+
+    for (let i = layers.length - 1; i >= 0; i--) {
+      const layer = layers[i];
+      if (!layer.visible || layer.isFolder || !layer.target) continue;
+      
+      let mat = state.compositeMaterials.get(layer.id);
+      if (mat) {
+        // Re-apply properties in case they were modified elsewhere before export
+        if (layer.clippingParentId) {
+            const parentLayer = layers.find(l => l.id === layer.clippingParentId);
+            if (parentLayer && parentLayer.target) {
+                mat.setLayerClipped(layer.target.texture, parentLayer.target.texture, layer.opacity, layer.blendMode);
+            } else {
+                mat.setLayer(layer.target.texture, layer.opacity, layer.blendMode);
+            }
+        } else {
+            mat.setLayer(layer.target.texture, layer.opacity, layer.blendMode);
+        }
+        
+        state.compositeQuad.material = mat;
+        gl.render(state.compositeScene, state.compositeCamera);
+      }
+    }
+
+    // Run dilation on this new composite
+    if (state.uvMaskTarget) {
+      gl.setRenderTarget(state.dilatedTarget);
+      gl.setClearColor(0x000000, 0);
+      gl.clear();
+      state.dilationMaterial.setMap(state.compositeTarget.texture, state.uvMaskTarget.texture, state.textureSize, state.textureSize, 16.0);
+      state.compositeQuad.material = state.dilationMaterial;
+      gl.render(state.compositeScene, state.compositeCamera);
+    }
+
     const width = state.textureSize;
     const height = state.textureSize;
     const buffer = new Uint8Array(width * height * 4);
     
-    gl.readRenderTargetPixels(state.dilatedTarget, 0, 0, width, height, buffer);
+    gl.readRenderTargetPixels(state.dilatedTarget!, 0, 0, width, height, buffer);
     
     const canvas = document.createElement('canvas');
     canvas.width = width;
     canvas.height = height;
     const ctx = canvas.getContext('2d');
-    if (!ctx) return null;
+    if (!ctx) {
+      gl.setRenderTarget(oldRT);
+      gl.autoClear = oldAutoClear;
+      return null;
+    }
     
     const imgData = new ImageData(new Uint8ClampedArray(buffer), width, height);
     ctx.putImageData(imgData, 0, 0);
@@ -659,13 +982,42 @@ export function useWebGLPaint(
     flipCanvas.width = width;
     flipCanvas.height = height;
     const flipCtx = flipCanvas.getContext('2d');
+    let finalDataUrl = '';
+    
     if (flipCtx) {
       flipCtx.translate(0, height);
       flipCtx.scale(1, -1);
       flipCtx.drawImage(canvas, 0, 0);
-      return flipCanvas.toDataURL(format === 'jpeg' ? 'image/jpeg' : 'image/png');
+      finalDataUrl = flipCanvas.toDataURL(format === 'jpeg' ? 'image/jpeg' : 'image/png');
+    } else {
+      finalDataUrl = canvas.toDataURL(format === 'jpeg' ? 'image/jpeg' : 'image/png');
     }
-    return canvas.toDataURL(format === 'jpeg' ? 'image/jpeg' : 'image/png');
+
+    gl.setRenderTarget(oldRT);
+    gl.autoClear = oldAutoClear;
+    
+    // Trigger a normal composite update for the viewport after we messed with the target
+    state.needsComposite = true;
+
+    return finalDataUrl;
+  }, [gl, layers]);
+
+  const sampleColor = useCallback((intersection: THREE.Intersection) => {
+    const state = stateRef.current;
+    if (!state.dilatedTarget || !intersection.uv) return '#ffffff';
+
+    const width = state.textureSize;
+    const height = state.textureSize;
+    const x = Math.floor(intersection.uv.x * width);
+    const y = Math.floor(intersection.uv.y * height);
+    
+    const buffer = new Uint8Array(4);
+    gl.readRenderTargetPixels(state.dilatedTarget, x, y, 1, 1, buffer);
+    
+    const r = buffer[0].toString(16).padStart(2, '0');
+    const g = buffer[1].toString(16).padStart(2, '0');
+    const b = buffer[2].toString(16).padStart(2, '0');
+    return `#${r}${g}${b}`;
   }, [gl]);
 
   return {
@@ -689,5 +1041,6 @@ export function useWebGLPaint(
     undo,
     redo,
     exportTexture,
+    sampleColor,
   };
 }

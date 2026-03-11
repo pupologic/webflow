@@ -9,8 +9,11 @@ import { TransformPanel } from '@/components/ui-custom/TransformPanel';
 import { LayersPanel } from '@/components/ui-custom/LayersPanel';
 import { EnvironmentPanel } from '@/components/ui-custom/EnvironmentPanel';
 import { MaterialPanel } from '@/components/ui-custom/MaterialPanel';
+import { EssentialsPanel } from '@/components/ui-custom/EssentialsPanel';
 import type { BrushSettings } from '@/hooks/useWebGLPaint';
-import { Brush, Box, Layers, Image as ImageIcon, Sun, Eraser, Undo2, Redo2, Columns2, Boxes, PaintBucket } from 'lucide-react';
+import { Brush, Box, Layers, Image as ImageIcon, Sun, Eraser, Undo2, Redo2, Columns2, Boxes, PaintBucket, Sparkles } from 'lucide-react';
+import { OverlayManager } from '@/components/ui-custom/OverlayManager';
+import type { OverlayData } from '@/components/ui-custom/OverlayManager';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { Slider } from '@/components/ui/slider';
 import { Toaster, toast } from 'sonner';
@@ -35,10 +38,19 @@ function App() {
     type: 'circle',
     mode: 'paint',
     spacing: 0.25,
+    symmetryMode: 'none',
+    symmetryAxis: 'x',
+    radialPoints: 4,
+    lazyMouse: false,
+    lazyRadius: 0.1,
+    jitterSize: 0,
+    jitterAngle: false,
+    jitterOpacity: 0,
   });
 
   const [modelName, setModelName] = useState<string>('Suzanne');
   const [modelParts, setModelParts] = useState<ModelPart[]>([]);
+  const [overlays, setOverlays] = useState<OverlayData[]>([]);
 
   const [modelTransform, setModelTransform] = useState({
     position: [0, 0, 0] as [number, number, number],
@@ -69,6 +81,36 @@ function App() {
   const [objectColor, setObjectColor] = useState('#e5e5e5');
   const [roughness, setRoughness] = useState(0.8);
   const [metalness, setMetalness] = useState(0.1);
+
+  const handleAddOverlay = useCallback((type: 'reference' | 'stencil', file: File) => {
+    const url = URL.createObjectURL(file);
+    const newOverlay: OverlayData = {
+      id: THREE.MathUtils.generateUUID(),
+      type,
+      imageUrl: url,
+      x: window.innerWidth / 2,
+      y: window.innerHeight / 2,
+      scale: 1,
+      rotation: 0,
+      opacity: type === 'stencil' ? 0.5 : 1.0,
+      visible: true
+    };
+    setOverlays(prev => [...prev, newOverlay]);
+  }, []);
+
+  const handleUpdateOverlay = useCallback((id: string, updates: Partial<OverlayData>) => {
+    setOverlays(prev => prev.map(o => o.id === id ? { ...o, ...updates } : o));
+  }, []);
+
+  const handleRemoveOverlay = useCallback((id: string) => {
+    setOverlays(prev => {
+      const target = prev.find(o => o.id === id);
+      if (target) {
+        URL.revokeObjectURL(target.imageUrl);
+      }
+      return prev.filter(o => o.id !== id);
+    });
+  }, []);
 
   const textureRef = useRef<THREE.CanvasTexture | null>(null);
 
@@ -238,7 +280,7 @@ function App() {
             </div>
             <div className="hidden sm:flex items-baseline gap-2">
               <h1 className="text-xs font-semibold text-zinc-100 tracking-wide">3D PAINTER</h1>
-              <span className="text-[10px] text-zinc-500 font-medium">v1.2.5</span>
+              <span className="text-[10px] text-zinc-500 font-medium">v1.3.3</span>
             </div>
           </div>
 
@@ -362,6 +404,20 @@ function App() {
 
           <Popover>
             <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-2 rounded-md">
+              <Sparkles className="w-5 h-5" />
+            </PopoverTrigger>
+            <PopoverContent className="w-80 bg-[#121214] border-white/10 p-5 mt-2 shadow-2xl">
+              <EssentialsPanel 
+                brushSettings={brushSettings}
+                onBrushSettingsChange={setBrushSettings}
+              />
+            </PopoverContent>
+          </Popover>
+
+
+
+          <Popover>
+            <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-2 rounded-md">
               <Layers className="w-5 h-5" />
             </PopoverTrigger>
             <PopoverContent className="w-80 bg-[#121214] border-white/10 p-5 mt-2">
@@ -446,6 +502,14 @@ function App() {
           </div>
 
           <div className="flex-1 w-full relative flex" ref={containerRef}>
+            {/* OVERLAYS UI (DOM Level) */}
+            <OverlayManager 
+              overlays={overlays}
+              onAdd={handleAddOverlay}
+              onUpdate={handleUpdateOverlay}
+              onRemove={handleRemoveOverlay}
+            />
+
             {/* 3D Scene panel */}
             <div
               className="relative h-full"
@@ -469,6 +533,7 @@ function App() {
                 metalness={metalness}
                 onTextureChange={handleTextureChange}
                 onLayerControlsReady={setLayerControls}
+                activeStencil={overlays.find(o => o.type === 'stencil' && o.visible)}
               />
             </div>
 

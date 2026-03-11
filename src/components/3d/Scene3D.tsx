@@ -4,6 +4,7 @@ import { OrbitControls, Grid, Environment } from '@react-three/drei';
 import * as THREE from 'three';
 import { PaintableMesh } from './PaintableMesh';
 import type { BrushSettings } from '@/hooks/useWebGLPaint';
+import type { OverlayData } from '@/components/ui-custom/OverlayManager';
 
 interface Scene3DProps {
   brushSettings: BrushSettings;
@@ -29,6 +30,7 @@ interface Scene3DProps {
   backgroundColor?: string;
   onTextureChange?: (texture: THREE.Texture | null, previewCanvas?: HTMLCanvasElement) => void;
   onLayerControlsReady?: (controls: any) => void;
+  activeStencil?: OverlayData;
 }
 
 const CameraController = ({ focalLength }: { focalLength: number }) => {

@@ -163,9 +163,9 @@ export const UVOverlayPanel: React.FC<UVOverlayPanelProps> = ({ texture, preview
     let rafId: number;
 
     const poll = () => {
-      const tex = textureRef.current;
-      if (tex && tex.version !== lastVersion) {
-        lastVersion = tex.version;
+      const pc = previewCanvasRef.current as any;
+      if (pc && pc.version !== lastVersion) {
+        lastVersion = pc.version;
         drawFrame();
       }
       rafId = requestAnimationFrame(poll);

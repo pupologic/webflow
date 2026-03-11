@@ -4,9 +4,16 @@ import { Label } from '@/components/ui/label';
 import { Circle, Square } from 'lucide-react';
 import type { BrushSettings } from '@/hooks/useWebGLPaint';
 
+import pencil1 from '@/brushes/pencil_1.png';
+import grunge from '@/brushes/grunge.png';
+import spray from '@/brushes/spray.png';
+
 const PRESET_BRUSHES = [
-  { id: 'circle', type: 'circle' as const, label: 'Round', icon: <Circle className="w-4 h-4" /> },
-  { id: 'square', type: 'square' as const, label: 'Square', icon: <Square className="w-4 h-4" /> },
+  { id: 'circle', type: 'circle' as const, textureId: null, label: 'Round', icon: <Circle className="w-4 h-4" /> },
+  { id: 'square', type: 'square' as const, textureId: null, label: 'Square', icon: <Square className="w-4 h-4" /> },
+  { id: 'pencil', type: 'texture' as const, textureId: pencil1, label: 'Pencil', icon: <img src={pencil1} className="w-5 h-5 opacity-80 invert dark:invert-0" alt="pencil" /> },
+  { id: 'spray', type: 'texture' as const, textureId: spray, label: 'Spray', icon: <img src={spray} className="w-5 h-5 opacity-80 invert dark:invert-0" alt="spray" /> },
+  { id: 'grunge', type: 'texture' as const, textureId: grunge, label: 'Grunge', icon: <img src={grunge} className="w-5 h-5 opacity-80 invert dark:invert-0" alt="grunge" /> },
 ];
 
 interface BrushControlsProps {
@@ -35,13 +42,15 @@ export const BrushControls: React.FC<BrushControlsProps> = ({
         <Label className="text-zinc-400 text-xs tracking-wide">SHAPE</Label>
         <div className="grid grid-cols-2 gap-2">
           {PRESET_BRUSHES.map((b) => {
-            const isActive = brushSettings.type === b.type;
+            const isActive = brushSettings.type === b.type && brushSettings.textureId === b.textureId;
             return (
               <button
                 key={b.id}
                 onClick={() => onBrushSettingsChange({ 
                   ...brushSettings, 
-                  type: b.type
+                  type: b.type,
+                  textureId: b.textureId,
+                  // Auto-adjust spacing/hardness for texture brushes for better experience, or just keep as is
                 })}
                 className={`w-full py-2 flex items-center justify-center rounded-md border transition-all bg-zinc-900 gap-2 ${
                   isActive ? 'border-white ring-2 ring-zinc-800' : 'border-white/10 text-zinc-500 hover:border-white/30'
