@@ -1,20 +1,7 @@
 import React from 'react';
 import { Slider } from '@/components/ui/slider';
 import { Label } from '@/components/ui/label';
-import { Circle, Square } from 'lucide-react';
 import type { BrushSettings } from '@/hooks/useWebGLPaint';
-
-import pencil1 from '@/brushes/pencil_1.png';
-import grunge from '@/brushes/grunge.png';
-import spray from '@/brushes/spray.png';
-
-const PRESET_BRUSHES = [
-  { id: 'circle', type: 'circle' as const, textureId: null, label: 'Round', icon: <Circle className="w-4 h-4" /> },
-  { id: 'square', type: 'square' as const, textureId: null, label: 'Square', icon: <Square className="w-4 h-4" /> },
-  { id: 'pencil', type: 'texture' as const, textureId: pencil1, label: 'Pencil', icon: <img src={pencil1} className="w-5 h-5 opacity-80 invert dark:invert-0" alt="pencil" /> },
-  { id: 'spray', type: 'texture' as const, textureId: spray, label: 'Spray', icon: <img src={spray} className="w-5 h-5 opacity-80 invert dark:invert-0" alt="spray" /> },
-  { id: 'grunge', type: 'texture' as const, textureId: grunge, label: 'Grunge', icon: <img src={grunge} className="w-5 h-5 opacity-80 invert dark:invert-0" alt="grunge" /> },
-];
 
 interface BrushControlsProps {
   brushSettings: BrushSettings;
@@ -35,35 +22,7 @@ export const BrushControls: React.FC<BrushControlsProps> = ({
 
   return (
     <div className="space-y-6 p-5 bg-[#09090b] rounded-xl border border-white/5 shadow-lg">
-      <h3 className="text-zinc-100 font-semibold text-sm tracking-wide uppercase">Brush</h3>
-      
-      {/* Brush Type Selection */}
-      <div className="space-y-3">
-        <Label className="text-zinc-400 text-xs tracking-wide">SHAPE</Label>
-        <div className="grid grid-cols-2 gap-2">
-          {PRESET_BRUSHES.map((b) => {
-            const isActive = brushSettings.type === b.type && brushSettings.textureId === b.textureId;
-            return (
-              <button
-                key={b.id}
-                onClick={() => onBrushSettingsChange({ 
-                  ...brushSettings, 
-                  type: b.type,
-                  textureId: b.textureId,
-                  // Auto-adjust spacing/hardness for texture brushes for better experience, or just keep as is
-                })}
-                className={`w-full py-2 flex items-center justify-center rounded-md border transition-all bg-zinc-900 gap-2 ${
-                  isActive ? 'border-white ring-2 ring-zinc-800' : 'border-white/10 text-zinc-500 hover:border-white/30'
-                }`}
-                title={b.label}
-              >
-                {b.icon}
-                <span className="text-xs">{b.label}</span>
-              </button>
-            );
-          })}
-        </div>
-      </div>
+      <h3 className="text-zinc-100 font-semibold text-sm tracking-wide uppercase">Quick Settings</h3>
       
       {/* Brush Size */}
       <div className="space-y-2">
@@ -117,34 +76,17 @@ export const BrushControls: React.FC<BrushControlsProps> = ({
         />
       </div>
 
-      {/* Brush Preview */}
-      <div className="mt-4 pt-4 border-t border-white/5">
-        <Label className="text-zinc-400 text-xs tracking-wide mb-3 block">PREVIEW</Label>
-        <div className="bg-[#09090b] rounded-xl border border-white/5 p-4 flex items-center justify-center h-24 seamless-checkerboard">
-          {brushSettings.type === 'circle' && (
-            <div
-              className="rounded-full"
-              style={{
-                width: Math.min(brushSettings.size, 80),
-                height: Math.min(brushSettings.size, 80),
-                backgroundColor: brushSettings.color,
-                opacity: brushSettings.opacity,
-              }}
-            />
-          )}
-
-          {brushSettings.type === 'square' && (
-            <div
-              className="rounded-none"
-              style={{
-                width: Math.min(brushSettings.size, 80),
-                height: Math.min(brushSettings.size, 80),
-                backgroundColor: brushSettings.color,
-                opacity: brushSettings.opacity,
-              }}
-            />
-          )}
-
+      {/* Dynamics */}
+      <div className="space-y-4 pt-4 border-t border-white/10">
+        <Label className="text-zinc-400 text-xs tracking-wide">DYNAMICS</Label>
+        <div className="flex items-center justify-between bg-zinc-900/50 p-2 rounded-lg border border-white/5">
+          <span className="text-xs text-zinc-300">Follow Path (Rotation)</span>
+          <button
+            onClick={() => onBrushSettingsChange({ ...brushSettings, followPath: !brushSettings.followPath })}
+            className={`w-10 h-5 rounded-full relative transition-colors ${brushSettings.followPath ? 'bg-emerald-500' : 'bg-zinc-700'}`}
+          >
+            <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${brushSettings.followPath ? 'left-6' : 'left-1'}`} />
+          </button>
         </div>
       </div>
     </div>

@@ -1,5 +1,5 @@
 import React from 'react';
-import { Brush, Eraser, Undo2, Redo2, ArrowRightLeft, Layers } from 'lucide-react';
+import { Brush, Eraser, Droplet, Hand, Undo2, Redo2, ArrowRightLeft, Layers } from 'lucide-react';
 import { Slider } from '@/components/ui/slider';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { ColorPicker } from '@/components/ui-custom/ColorPicker';
@@ -172,6 +172,56 @@ export const LeftShortcutBar: React.FC<LeftShortcutBarProps> = ({
       >
         <Eraser className="w-5 h-5" />
       </button>
+
+      <Popover>
+        <PopoverTrigger asChild>
+          <button 
+            onClick={() => setBrushSettings({...brushSettings, mode: 'blur'})}
+            className={`p-2 rounded-xl transition-all ${brushSettings.mode === 'blur' ? 'bg-zinc-700 text-zinc-100 shadow-md scale-105' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`}
+            title="Blur (Strength)"
+          >
+            <Droplet className="w-5 h-5" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent side="right" className="w-12 h-40 p-3 bg-zinc-800 border-zinc-700">
+          <div className="flex flex-col items-center h-full gap-2">
+            <span className="text-[10px] text-zinc-400 font-medium">Blur</span>
+            <Slider 
+              orientation="vertical"
+              value={[brushSettings.blurStrength || 1.0]}
+              onValueChange={([val]) => setBrushSettings({...brushSettings, blurStrength: val})}
+              min={0.1}
+              max={4.0}
+              step={0.1}
+            />
+          </div>
+        </PopoverContent>
+      </Popover>
+
+      <Popover>
+        <PopoverTrigger asChild>
+          <button 
+            onClick={() => setBrushSettings({...brushSettings, mode: 'smudge'})}
+            className={`p-2 rounded-xl transition-all ${brushSettings.mode === 'smudge' ? 'bg-zinc-700 text-zinc-100 shadow-md scale-105' : 'text-zinc-500 hover:text-zinc-200 hover:bg-white/5'}`}
+            title="Smudge (Strength)"
+          >
+            <Hand className="w-5 h-5" />
+          </button>
+        </PopoverTrigger>
+        <PopoverContent side="right" className="w-12 h-40 p-3 bg-zinc-800 border-zinc-700">
+          <div className="flex flex-col items-center h-full gap-2">
+            <span className="text-[10px] text-zinc-400 font-medium">Smudge</span>
+            <Slider 
+              orientation="vertical"
+              value={[brushSettings.smudgeStrength !== undefined ? brushSettings.smudgeStrength : 1.0]}
+              onValueChange={([val]) => setBrushSettings({...brushSettings, smudgeStrength: val})}
+              min={0.1}
+              max={3.0}
+              step={0.1}
+            />
+          </div>
+        </PopoverContent>
+      </Popover>
       
       {/* Sliders */}
       <div className="w-6 h-36 py-2 flex justify-center" title="Brush Size">

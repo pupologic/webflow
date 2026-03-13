@@ -40,6 +40,17 @@ function App() {
     jitterSize: 0,
     jitterAngle: false,
     jitterOpacity: 0,
+    followPath: false,
+    blurStrength: 1.0,
+    smudgeStrength: 1.0,
+
+    // Metadata for V2
+    id: 'default-round',
+    name: 'Default Round',
+    category: 'Basics',
+    usePressureSize: true,
+    usePressureOpacity: true,
+    pressureCurve: 1.0,
   });
 
   const [modelName, setModelName] = useState<string>('Suzanne');

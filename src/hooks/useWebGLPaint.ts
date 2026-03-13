@@ -14,7 +14,9 @@ export interface BrushSettings {
   hardness: number;
   type: 'circle' | 'square' | 'texture';
   textureId?: string | null;
-  mode: 'paint' | 'erase';
+  mode: 'paint' | 'erase' | 'blur' | 'smudge';
+  blurStrength?: number;
+  smudgeStrength?: number;
   spacing: number;
   lazyMouse?: boolean;
   lazyRadius?: number;
@@ -24,6 +26,15 @@ export interface BrushSettings {
   symmetryMode?: 'none' | 'mirror' | 'radial';
   symmetryAxis?: 'x' | 'y' | 'z';
   radialPoints?: number;
+  followPath?: boolean;
+  
+  // Brush System V2
+  id: string;
+  name: string;
+  category: string;
+  usePressureSize?: boolean;
+  usePressureOpacity?: boolean;
+  pressureCurve?: number; // 0.5 = soft, 1.0 = linear, 2.0 = firm
 };
 
 export interface GPULayer {
@@ -100,7 +111,13 @@ export function useWebGLPaint(
     
     // Stencil State
     stencilTexture: null as THREE.Texture | null,
-    stencilMatrix: new THREE.Matrix3()
+    stencilMatrix: new THREE.Matrix3(),
+
+    // Blur / Smudge State
+    snapshotTarget: null as THREE.WebGLRenderTarget | null,
+    lastHitUV: new THREE.Vector2(),
+    hasSnapshot: false,
+    lastFollowAngle: 0,
   });
 
   const undoStackRef = useRef<{ layerId: string; target: THREE.WebGLRenderTarget, isMask: boolean }[]>([]);
@@ -112,6 +129,7 @@ export function useWebGLPaint(
     if (state.compositeTarget) state.compositeTarget.dispose();
     if (state.dilatedTarget) state.dilatedTarget.dispose();
     if (state.uvMaskTarget) state.uvMaskTarget.dispose();
+    if (state.snapshotTarget) state.snapshotTarget.dispose();
 
     state.textureSize = size;
     const targetOpts = {
@@ -123,6 +141,7 @@ export function useWebGLPaint(
     state.compositeTarget = new THREE.WebGLRenderTarget(size, size, targetOpts);
     state.dilatedTarget = new THREE.WebGLRenderTarget(size, size, targetOpts);
     state.uvMaskTarget = new THREE.WebGLRenderTarget(size, size, targetOpts);
+    state.snapshotTarget = new THREE.WebGLRenderTarget(size, size, targetOpts);
 
     state.layers = []; // Reset on init
     
@@ -251,20 +270,24 @@ export function useWebGLPaint(
   const drawStamp = useCallback((
     worldPos: THREE.Vector3, 
     activeLayer: GPULayer, 
-    pressure: number = 1.0, 
+    sizePressure: number = 1.0, 
+    opacityPressure: number = 1.0,
     normal: THREE.Vector3 = new THREE.Vector3(0, 0, 1),
-    angle: number = 0.0
+    angle: number = 0.0,
+    uv: THREE.Vector2 = new THREE.Vector2()
   ) => {
     const state = stateRef.current;
-    const { color, opacity, hardness, type, mode, size, jitterSize } = brushSettings;
+    const { color, opacity, hardness, type, mode, size, blurStrength, smudgeStrength } = brushSettings;
 
     const dist = camera.position.distanceTo(worldPos);
     let worldRadius = 0.1;
     
     // Apply Size Jitter
-    let dynamicSize = size * Math.max(0.05, pressure);
-    if (jitterSize) {
-      dynamicSize *= (1.0 + (Math.random() * 2.0 - 1.0) * jitterSize);
+    let dynamicSize = size * sizePressure;
+    const jSize = brushSettings.jitterSize || 0;
+    if (jSize > 0.01) {
+      const variation = (Math.random() * 2.0 - 1.0) * jSize;
+      dynamicSize *= Math.max(0.1, 1.0 + variation);
     }
 
     if ((camera as THREE.PerspectiveCamera).isPerspectiveCamera) {
@@ -396,9 +419,11 @@ export function useWebGLPaint(
     // View-Projection Matrix
     const vpMatrix = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
 
+    const smudgeDisplacement = new THREE.Vector2().subVectors(uv, state.lastHitUV).multiplyScalar(1.5);
+
     state.brushMaterial.setBrush(
       mode === 'erase' ? 'erase' : color, 
-      opacity, 
+      opacity * opacityPressure, 
       worldPos, 
       worldRadius, 
       hardness, 
@@ -410,7 +435,13 @@ export function useWebGLPaint(
       stencilMat,
       vpMatrix,
       stencilMode,
-      camera.position
+      camera.position,
+      mode,
+      state.snapshotTarget?.texture || null,
+      smudgeDisplacement,
+      blurStrength || 1.0,
+      state.textureSize,
+      smudgeStrength !== undefined ? smudgeStrength : 1.0
     );
     
     // Render
@@ -439,10 +470,10 @@ export function useWebGLPaint(
 
     // Advanced Symmetry
     if (brushSettings.symmetryMode && brushSettings.symmetryMode !== 'none') {
-      const mode = brushSettings.symmetryMode;
+      const symMode = brushSettings.symmetryMode;
       const axis = brushSettings.symmetryAxis || 'x';
       
-      if (mode === 'mirror') {
+      if (symMode === 'mirror') {
         const mirroredPos = worldPos.clone();
         const mirroredNormal = normal.clone();
         
@@ -455,7 +486,7 @@ export function useWebGLPaint(
 
         state.brushMaterial.setBrush(
           brushSettings.mode === 'erase' ? 'erase' : color, 
-          opacity, 
+          opacity * opacityPressure, 
           mirroredPos, 
           worldRadius, 
           hardness, 
@@ -467,11 +498,17 @@ export function useWebGLPaint(
           stencilMat,
           vpMatrix,
           stencilMode,
-          camera.position
+          camera.position,
+          mode,
+          state.snapshotTarget?.texture || null,
+          smudgeDisplacement,
+          blurStrength || 1.0,
+          state.textureSize,
+          smudgeStrength !== undefined ? smudgeStrength : 1.0
         );
         renderDecal();
       } 
-      else if (mode === 'radial') {
+      else if (symMode === 'radial') {
         const points = brushSettings.radialPoints || 4;
         const angleStep = (Math.PI * 2) / points;
         
@@ -514,7 +551,7 @@ export function useWebGLPaint(
 
           state.brushMaterial.setBrush(
             brushSettings.mode === 'erase' ? 'erase' : color, 
-            opacity, 
+            opacity * opacityPressure, 
             radialPos, 
             worldRadius, 
             hardness, 
@@ -526,12 +563,19 @@ export function useWebGLPaint(
             stencilMat,
             vpMatrix,
             stencilMode,
-            camera.position
+            camera.position,
+            mode,
+            state.snapshotTarget?.texture || null,
+            smudgeDisplacement,
+            blurStrength || 1.0,
+            state.textureSize,
+            smudgeStrength !== undefined ? smudgeStrength : 1.0
           );
           renderDecal();
         }
       }
     }
+
 
     gl.setRenderTarget(oldRT);
     gl.autoClear = true;
@@ -543,6 +587,7 @@ export function useWebGLPaint(
     if (!groupRef.current) return;
     
     state.isPainting = true;
+    const { mode } = brushSettings;
     
     if (onColorPaintedRef.current) {
       onColorPaintedRef.current(brushSettings.color);
@@ -571,9 +616,58 @@ export function useWebGLPaint(
         finalPressure *= (1.0 - Math.random() * brushSettings.jitterOpacity);
       }
 
-      drawStamp(intersection.point, activeLine, finalPressure, normal, angle);
+      if (mode === 'blur' || mode === 'smudge') {
+          // Function to capture the current layer into the snapshot, with dilation to fix seams
+          const updateSnapshot = () => {
+              const renderer = gl;
+              const currentRT = renderer.getRenderTarget();
+              
+              const oldMat = state.compositeQuad.material;
+              renderer.setRenderTarget(state.snapshotTarget);
+
+              if (state.uvMaskTarget) {
+                  // Perform dilation on the snapshot to fix seam artifacts
+                  state.dilationMaterial.setMap(
+                      activeLine.target!.texture, 
+                      state.uvMaskTarget.texture, 
+                      state.textureSize, 
+                      state.textureSize, 
+                      2.0
+                  );
+                  state.compositeQuad.material = state.dilationMaterial;
+              } else {
+                  const mat = new THREE.MeshBasicMaterial({ 
+                    map: activeLine.target!.texture, 
+                    depthTest: false, depthWrite: false, transparent: true, blending: THREE.NoBlending 
+                  });
+                  state.compositeQuad.material = mat;
+              }
+              
+              renderer.render(state.compositeScene, state.compositeCamera);
+              
+              if (state.compositeQuad.material !== state.dilationMaterial) {
+                  (state.compositeQuad.material as any).dispose();
+              }
+              
+              state.compositeQuad.material = oldMat;
+              renderer.setRenderTarget(currentRT);
+              state.hasSnapshot = true;
+          };
+
+          if (activeLine.target) {
+              updateSnapshot();
+              (state as any).updateSnapshot = updateSnapshot;
+          }
+      }
+
+      const uv = intersection.uv?.clone() || new THREE.Vector2();
+      state.lastHitUV.copy(uv);
+
+      const sPressure = brushSettings.usePressureSize ? pressure : 1.0;
+      const oPressure = brushSettings.usePressureOpacity ? pressure : 1.0;
+      drawStamp(intersection.point, activeLine, sPressure, oPressure, normal, angle, uv);
     }
-  }, [getActiveLayer, drawStamp, saveUndoState, groupRef, onColorPaintedRef, brushSettings]);
+  }, [getActiveLayer, drawStamp, saveUndoState, groupRef, onColorPaintedRef, brushSettings, gl]);
 
   const paint = useCallback((intersection: THREE.Intersection, targetPressure: number = 1.0) => {
     const state = stateRef.current;
@@ -582,6 +676,7 @@ export function useWebGLPaint(
     const activeLayer = getActiveLayer();
     if (!activeLayer) return;
 
+    const targetUV = intersection.uv?.clone() || new THREE.Vector2();
     let currentPoint = intersection.point;
 
     // --- Lazy Mouse logic ---
@@ -629,14 +724,60 @@ export function useWebGLPaint(
        const lerpPressure = THREE.MathUtils.lerp(state.lastPressure, targetPressure, t);
        
        let angle = brushSettings.type === 'texture' ? Math.random() * Math.PI * 2 : 0;
-       if (brushSettings.jitterAngle) angle = Math.random() * Math.PI * 2;
        
-       let finalPressure = lerpPressure;
-       if (brushSettings.jitterOpacity) {
-         finalPressure *= (1.0 - Math.random() * brushSettings.jitterOpacity);
+       if (brushSettings.followPath) {
+         const moveDir = new THREE.Vector3().subVectors(currentPoint, state.lastHitPoint).normalize();
+         if (moveDir.lengthSq() > 0.0001) {
+           const up = Math.abs(normal.y) < 0.999 ? new THREE.Vector3(0, 1, 0) : new THREE.Vector3(1, 0, 0);
+           const tangent = new THREE.Vector3().crossVectors(up, normal).normalize();
+           const bitangent = new THREE.Vector3().crossVectors(normal, tangent).normalize();
+           
+           const localX = moveDir.dot(tangent);
+           const localY = moveDir.dot(bitangent);
+           
+           const targetAngle = Math.atan2(localY, localX);
+           
+           // Smooth the angle to prevent flickering
+           const lerpFactor = 0.3;
+           let diff = targetAngle - state.lastFollowAngle;
+           if (diff < -Math.PI) diff += Math.PI * 2;
+           if (diff > Math.PI) diff -= Math.PI * 2;
+           
+           state.lastFollowAngle += diff * lerpFactor;
+           angle = state.lastFollowAngle;
+         } else {
+           angle = state.lastFollowAngle;
+         }
+       } else if (brushSettings.jitterAngle) {
+         angle = Math.random() * Math.PI * 2;
        }
        
-       drawStamp(lerpPos, activeLayer, finalPressure, normal, angle);
+       // Apply pressure curve
+       const curvedPres = Math.pow(lerpPressure, brushSettings.pressureCurve || 1.0);
+       const sPressure = brushSettings.usePressureSize ? curvedPres : 1.0;
+       const oPressure = brushSettings.usePressureOpacity ? curvedPres : 1.0;
+
+       let finalOpacityPressure = oPressure;
+       if (brushSettings.jitterOpacity) {
+         finalOpacityPressure *= (1.0 - Math.random() * brushSettings.jitterOpacity);
+       }
+       
+       const lerpUV = new THREE.Vector2().lerpVectors(state.lastHitUV, targetUV, t);
+       
+       drawStamp(lerpPos, activeLayer, sPressure, finalOpacityPressure, normal, angle, lerpUV);
+       state.lastHitUV.copy(lerpUV);
+
+       // Accumulate: Update snapshot more frequently for smudge to prevent tearing during fast moves
+       const updateFrequency = brushSettings.mode === 'smudge' ? 2 : 5;
+       if (i % updateFrequency === 0 && (brushSettings.mode === 'smudge' || brushSettings.mode === 'blur') && (state as any).updateSnapshot) {
+           (state as any).updateSnapshot();
+       }
+    }
+
+    // Accumulation: Update snapshot after some steps or at the end of the event
+    // This allows the smudge to "pick up" colors as it moves.
+    if ((brushSettings.mode === 'smudge' || brushSettings.mode === 'blur') && (state as any).updateSnapshot) {
+        (state as any).updateSnapshot();
     }
 
     state.lastHitPoint.copy(currentPoint);

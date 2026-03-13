@@ -3,10 +3,12 @@ import * as THREE from 'three';
 const vertexShader = `
   varying vec3 vWorldPos;
   varying vec3 vNormal;
+  varying vec2 vUv;
   void main() {
     // We apply the mesh's transform to get the true world position
     vWorldPos = (modelMatrix * vec4(position, 1.0)).xyz;
     vNormal = normalize(mat3(modelMatrix) * normal);
+    vUv = uv;
     // Map UV to NDC (Normalized Device Coordinates) [-1, 1]
     gl_Position = vec4(uv.x * 2.0 - 1.0, uv.y * 2.0 - 1.0, 0.0, 1.0);
   }
@@ -29,10 +31,17 @@ const fragmentShader = `
   uniform mat4 uVPMatrix; // View-Projection Matrix for screen space projection
   uniform int uStencilMode; // 0: Alpha, 1: Invert, 2: Luminance
   uniform bool uIsEraser;
+  uniform int uMode; // 0: paint, 1: erase, 2: blur, 3: smudge
+  uniform sampler2D uSnapshotTexture;
+  uniform vec2 uSmudgeOffset;
+  uniform float uBlurStrength;
+  uniform float uSmudgeStrength;
+  uniform vec2 uTexSize;
   uniform vec3 uCameraPos;
   
     varying vec3 vWorldPos;
     varying vec3 vNormal;
+    varying vec2 vUv;
 
     // Rotation matrix for brush randomness/angle
     mat2 rotate2d(float _angle){
@@ -42,7 +51,6 @@ const fragmentShader = `
 
     void main() {
       // 1. Normal Masking: Only paint surfaces facing the brush
-      // Tightened threshold (0.2) to prevent bleed on tight corners (like eyes/fingers)
       float angleFactor = dot(normalize(vNormal), normalize(uBrushNormal));
       if (angleFactor < 0.2) discard; 
 
@@ -53,121 +61,103 @@ const fragmentShader = `
 
       // 3. Depth Masking: Projector volume
       float depthDist = abs(dot(vWorldPos - uBrushPos, normalize(uBrushNormal)));
-      // Tightened threshold (1.0) and added smooth falloff
       if (depthDist > uRadius * 1.0) discard;
       float depthAlpha = 1.0 - smoothstep(uRadius * 0.5, uRadius * 1.0, depthDist);
 
       float alphaMultiplier = depthAlpha;
 
       // 3. Project to 2D Plane (Decal Projection)
-      // Vector from brush center to current pixel
       vec3 p = vWorldPos - uBrushPos;
       
-      // Compute local Tangent and Bitangent to project 3D onto 2D plane
       vec3 up = abs(uBrushNormal.y) < 0.999 ? vec3(0.0, 1.0, 0.0) : vec3(1.0, 0.0, 0.0);
       vec3 tangent = normalize(cross(up, normalize(uBrushNormal)));
       vec3 bitangent = cross(normalize(uBrushNormal), tangent);
       
-      // Project to 2D local space
       vec2 localPos = vec2(dot(p, tangent), dot(p, bitangent));
-      
-      // Rotate local coordinates based on brush angle
       localPos = rotate2d(uBrushAngle) * localPos;
 
-      if (!uUseTexture) {
-        if (uShape == 0) {
-          // Circle / Sphere logic but using 2D Planar Distance
-          float dist = length(localPos);
-          if (dist > uRadius) discard;
-          
-          // Calculate softness based on Hardness parameter
-          float normalizedDist = dist / uRadius;
-          alphaMultiplier = 1.0 - smoothstep(uHardness, 1.0, normalizedDist);
-          
+      if (uMode == 0 || uMode == 1) { // Paint or Erase
+        if (!uUseTexture) {
+          if (uShape == 0) {
+            float dist = length(localPos);
+            if (dist > uRadius) discard;
+            float normalizedDist = dist / uRadius;
+            alphaMultiplier = 1.0 - smoothstep(uHardness, 1.0, normalizedDist);
+          } else {
+            vec2 d = abs(localPos);
+            float maxDist = max(d.x, d.y);
+            if (maxDist > uRadius) discard;
+            float normalizedDist = maxDist / uRadius;
+            alphaMultiplier = 1.0 - smoothstep(uHardness, 1.0, normalizedDist);
+          }
         } else {
-          // Square logic using 2D Planar Distance
-          vec2 d = abs(localPos);
-          float maxDist = max(d.x, d.y);
-          if (maxDist > uRadius) discard;
-          
-          // Square softness
-          float normalizedDist = maxDist / uRadius;
-          alphaMultiplier = 1.0 - smoothstep(uHardness, 1.0, normalizedDist);
+          if (length(localPos) > uRadius) discard;
+          vec2 texUV = (localPos / (uRadius * 2.0)) + 0.5;
+          if (texUV.x < 0.0 || texUV.x > 1.0 || texUV.y < 0.0 || texUV.y > 1.0) discard;
+          vec4 texColor = texture2D(uBrushTexture, texUV);
+          if (texColor.a > 0.99) {
+            // No alpha: use luminance/max channel (white particles on dark/black background)
+            alphaMultiplier = max(texColor.r, max(texColor.g, texColor.b));
+          } else {
+            // Alpha exists: standard brush
+            alphaMultiplier = texColor.a;
+          }
+          float dist = length(localPos) / uRadius;
+          alphaMultiplier *= (1.0 - smoothstep(uHardness, 1.0, dist));
+          if (alphaMultiplier <= 0.01) discard;
         }
       } else {
-        // Texture Projection
-        if (length(localPos) > uRadius) discard; // Out of projected circle bounds
-        
-        // Map from [-radius, radius] to UV [0, 1]
-        vec2 texUV = (localPos / (uRadius * 2.0)) + 0.5;
-        
-        // Clamp coordinates to prevent texture wrapping artifacts
-        if (texUV.x < 0.0 || texUV.x > 1.0 || texUV.y < 0.0 || texUV.y > 1.0) discard;
-        
-        // Sample texture
-        vec4 texColor = texture2D(uBrushTexture, texUV);
-        
-        // Handle masks: If texture is fully opaque (common with AI gen/JPEGs), use its luminance as the alpha mask.
-        // Otherwise, use the actual alpha channel.
-        if (texColor.a > 0.99) {
-          alphaMultiplier = (texColor.r + texColor.g + texColor.b) / 3.0;
-        } else {
-          alphaMultiplier = texColor.a;
-        }
-        
-        // Edge fade
-        float dist = length(localPos) / uRadius;
-        alphaMultiplier *= (1.0 - smoothstep(uHardness, 1.0, dist));
-        
-        if (alphaMultiplier <= 0.01) discard;
+        // Blur or Smudge both use the circular bounds logic
+        float dist = length(localPos);
+        if (dist > uRadius) discard;
+        float normalizedDist = dist / uRadius;
+        alphaMultiplier = 1.0 - smoothstep(uHardness, 1.0, normalizedDist);
       }
       
-      // Apply angle falloff for smoother edges on curved surfaces
       alphaMultiplier *= smoothstep(0.0, 0.2, angleFactor);
 
-      // 4. Stencil Masking (Projected Screen Space)
+      // 4. Stencil Masking
       if (uUseStencil) {
-          // Project world position to NDC space [-1, 1]
           vec4 projectedPos = uVPMatrix * vec4(vWorldPos, 1.0);
-          vec2 screenPos = projectedPos.xy / projectedPos.w; // Perspective divide
-          
-          // Map NDC (-1..1) to Normalized Screen Coordinates (0..1)
+          vec2 screenPos = projectedPos.xy / projectedPos.w;
           vec2 screenUV = screenPos * 0.5 + 0.5;
-          
-          // Apply Stencil Matrix (Maps 0..1 Screen space to Stencil UV space)
           vec3 stencilPos = uStencilMatrix * vec3(screenUV, 1.0);
           
           if (stencilPos.x >= 0.0 && stencilPos.x <= 1.0 && stencilPos.y >= 0.0 && stencilPos.y <= 1.0) {
               vec4 stencilColor = texture2D(uStencilTexture, vec2(stencilPos.x, stencilPos.y)); 
-              
-              // Calculate luminance
               float lum = (stencilColor.r + stencilColor.g + stencilColor.b) / 3.0;
-              
               float stencilMask = 1.0;
-              
-              if (uStencilMode == 0) { // Alpha
-                  stencilMask = stencilColor.a;
-                  // Auto fallback to luminance if image has no transparency at all
-                  if (stencilMask > 0.99 && stencilColor.r < 0.99) {
-                     // stencilMask = lum; // Disabled auto-fallback to give user strict control via modes
-                  }
-              } else if (uStencilMode == 1) { // Invert (Inverts Alpha)
-                  stencilMask = 1.0 - stencilColor.a;
-              } else if (uStencilMode == 2) { // Luminance
-                  stencilMask = lum * stencilColor.a; // Multiply by alpha so transparent areas don't paint out of nowhere
-              }
-              
+              if (uStencilMode == 0) stencilMask = stencilColor.a;
+              else if (uStencilMode == 1) stencilMask = 1.0 - stencilColor.a;
+              else if (uStencilMode == 2) stencilMask = lum * stencilColor.a;
               alphaMultiplier *= stencilMask;
           } else {
-              // Outside stencil bounds: No paint allowed (standard stencil behavior)
               alphaMultiplier = 0.0;
           }
       }
 
-      if (uIsEraser) {
+      if (uMode == 1) { // Erase
         gl_FragColor = vec4(0.0, 0.0, 0.0, alphaMultiplier * uOpacity);
-      } else {
+      } else if (uMode == 0) { // Paint
         gl_FragColor = vec4(uColor, uOpacity * alphaMultiplier);
+      } else if (uMode == 2) { // Blur
+        vec4 color = vec4(0.0);
+        float total = 0.0;
+        
+        for(float x = -2.0; x <= 2.0; x += 1.0) {
+            for(float y = -2.0; y <= 2.0; y += 1.0) {
+                vec2 offset = vec2(x, y) * (1.0 / uTexSize) * uBlurStrength;
+                color += texture2D(uSnapshotTexture, vUv + offset);
+                total += 1.0;
+            }
+        }
+        vec4 blurred = color / total;
+        gl_FragColor = vec4(blurred.rgb, blurred.a * alphaMultiplier * uOpacity);
+      } else if (uMode == 3) { // Smudge
+        // Sample snapshot at offset position
+        vec2 samplePos = vUv - uSmudgeOffset * uSmudgeStrength;
+        vec4 smudgedColor = texture2D(uSnapshotTexture, samplePos);
+        gl_FragColor = vec4(smudgedColor.rgb, smudgedColor.a * alphaMultiplier * uOpacity);
       }
     }
   `;
@@ -194,6 +184,12 @@ export class BrushShaderMaterial extends THREE.ShaderMaterial {
         uVPMatrix: { value: new THREE.Matrix4() },
         uStencilMode: { value: 0 },
         uIsEraser: { value: false },
+        uMode: { value: 0 },
+        uSnapshotTexture: { value: null },
+        uSmudgeOffset: { value: new THREE.Vector2(0, 0) },
+        uBlurStrength: { value: 1.0 },
+        uSmudgeStrength: { value: 1.0 },
+        uTexSize: { value: new THREE.Vector2(2048, 2048) },
         uCameraPos: { value: new THREE.Vector3() }
       },
       transparent: true,
@@ -217,9 +213,16 @@ export class BrushShaderMaterial extends THREE.ShaderMaterial {
     stencilMatrix: THREE.Matrix3 | null = null,
     vpMatrix: THREE.Matrix4 | null = null,
     stencilMode: number = 0,
-    cameraPos: THREE.Vector3 = new THREE.Vector3()
+    cameraPos: THREE.Vector3 = new THREE.Vector3(),
+    // New parameters for Blur/Smudge
+    mode: 'paint' | 'erase' | 'blur' | 'smudge' = 'paint',
+    snapshotTexture: THREE.Texture | null = null,
+    smudgeOffset: THREE.Vector2 = new THREE.Vector2(0, 0),
+    blurStrength: number = 1.0,
+    texSize: number = 2048,
+    smudgeStrength: number = 1.0
   ) {
-    this.uniforms.uColor.value.set(color);
+    this.uniforms.uColor.value.set(color === 'erase' ? '#000000' : color);
     this.uniforms.uCameraPos.value.copy(cameraPos);
     this.uniforms.uOpacity.value = opacity;
     this.uniforms.uBrushPos.value.copy(worldPos);
@@ -228,6 +231,7 @@ export class BrushShaderMaterial extends THREE.ShaderMaterial {
     this.uniforms.uShape.value = isSquare ? 1 : 0;
     this.uniforms.uBrushNormal.value.copy(normal);
     this.uniforms.uBrushAngle.value = angle;
+    this.uniforms.uTexSize.value.set(texSize, texSize);
     
     if (texture) {
       this.uniforms.uUseTexture.value = true;
@@ -248,8 +252,19 @@ export class BrushShaderMaterial extends THREE.ShaderMaterial {
       this.uniforms.uStencilTexture.value = null;
     }
 
-    // Handle Eraser Blending
-    if (color === 'erase') {
+    // Set Mode
+    if (mode === 'paint') this.uniforms.uMode.value = 0;
+    else if (mode === 'erase') this.uniforms.uMode.value = 1;
+    else if (mode === 'blur') this.uniforms.uMode.value = 2;
+    else if (mode === 'smudge') this.uniforms.uMode.value = 3;
+
+    this.uniforms.uSnapshotTexture.value = snapshotTexture;
+    this.uniforms.uSmudgeOffset.value.copy(smudgeOffset);
+    this.uniforms.uBlurStrength.value = blurStrength;
+    this.uniforms.uSmudgeStrength.value = smudgeStrength;
+
+    // Handle Blending
+    if (mode === 'erase') {
         this.uniforms.uIsEraser.value = true;
         this.blending = THREE.CustomBlending;
         this.blendEquation = THREE.AddEquation;

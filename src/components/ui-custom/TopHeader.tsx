@@ -1,11 +1,17 @@
+import { useState, useEffect } from 'react';
+import * as THREE from 'three';
 import { Box, Boxes, Image as ImageIcon, Save, Columns2, Home, PaintBucket, Sun, Sparkles, Layers, Eclipse, Brush } from 'lucide-react';
 import logoImg from '@/logo/logo.png';
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover';
 import { MeshSelector } from '@/components/ui-custom/MeshSelector';
 import { TransformPanel } from '@/components/ui-custom/TransformPanel';
 import { TexturePreview } from '@/components/ui-custom/TexturePreview';
+import { BrushLibrary } from '@/components/ui-custom/BrushLibrary';
+import { BrushStudio } from '@/components/ui-custom/BrushStudio';
 import { BrushControls } from '@/components/ui-custom/BrushControls';
+import { Dialog, DialogContent } from '@/components/ui/dialog';
 import { EnvironmentPanel } from '@/components/ui-custom/EnvironmentPanel';
+import { SlidersHorizontal } from 'lucide-react';
 import { MaterialPanel } from '@/components/ui-custom/MaterialPanel';
 import { EssentialsPanel } from '@/components/ui-custom/EssentialsPanel';
 import { LayersPanel } from '@/components/ui-custom/LayersPanel';
@@ -78,6 +84,38 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
   objectColor, setObjectColor, roughness, setRoughness, metalness, setMetalness,
   colorHistory, layerControls
 }) => {
+  const [isStudioOpen, setIsStudioOpen] = useState(false);
+  const [customBrushes, setCustomBrushes] = useState<BrushSettings[]>(() => {
+    const saved = localStorage.getItem('custom_brushes_v2');
+    return saved ? JSON.parse(saved) : [];
+  });
+
+  useEffect(() => {
+    localStorage.setItem('custom_brushes_v2', JSON.stringify(customBrushes));
+  }, [customBrushes]);
+
+  const handleSaveAsNewBrush = (name: string) => {
+    const newBrush = { ...brushSettings, name, id: THREE.MathUtils.generateUUID() };
+    setCustomBrushes(prev => [...prev, newBrush]);
+    setBrushSettings(newBrush);
+    setIsStudioOpen(false);
+  };
+
+  const handleDuplicateBrush = (brush: BrushSettings) => {
+    const newBrush = { ...brush, id: THREE.MathUtils.generateUUID(), name: `${brush.name} Copy` };
+    setCustomBrushes((prev: BrushSettings[]) => [...prev, newBrush]);
+  };
+
+  const handleRenameBrush = (brushId: string, newName: string) => {
+    setCustomBrushes((prev: BrushSettings[]) => prev.map(b => b.id === brushId ? { ...b, name: newName } : b));
+    if (brushSettings.id === brushId) {
+      setBrushSettings(prev => ({ ...prev, name: newName }));
+    }
+  };
+
+  const handleRemoveBrush = (brushId: string) => {
+    setCustomBrushes((prev: BrushSettings[]) => prev.filter(b => b.id !== brushId));
+  };
   return (
     <header className="bg-[#121214] border-b border-white/5 px-2 md:px-4 py-2 md:py-3 flex items-center justify-between z-10 shadow-md">
       {/* LEFT SIDE */}
@@ -180,13 +218,44 @@ export const TopHeader: React.FC<TopHeaderProps> = ({
         <div className="w-px h-5 md:h-6 bg-white/10 mx-0.5 md:mx-1" />
 
         <Popover>
-          <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-1.5 md:p-2 rounded-md cursor-pointer">
-            <Brush className="w-4 h-4 md:w-5 h-5" />
+          <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-1.5 md:p-2 rounded-md cursor-pointer flex items-center gap-1 md:gap-2 border border-white/5 bg-zinc-900/50">
+            <Brush className="w-4 h-4" />
+            <span className="text-[10px] hidden lg:inline font-bold text-zinc-300 uppercase tracking-tight max-w-[80px] truncate">{brushSettings.name}</span>
           </PopoverTrigger>
-          <PopoverContent className="w-96 bg-[#121214] border-white/10 p-5 mt-2 shadow-2xl">
-            <BrushControls brushSettings={brushSettings} onBrushSettingsChange={setBrushSettings} />
+          <PopoverContent className="w-[450px] p-0 bg-transparent border-none mt-2 shadow-2xl overflow-hidden" align="end">
+            <BrushLibrary 
+              brushSettings={brushSettings} 
+              onBrushSettingsChange={setBrushSettings} 
+              onOpenStudio={() => setIsStudioOpen(true)}
+              customPresets={customBrushes}
+              onDuplicateBrush={handleDuplicateBrush}
+              onRenameBrush={handleRenameBrush}
+              onRemoveBrush={handleRemoveBrush}
+            />
           </PopoverContent>
         </Popover>
+
+        {/* Quick Settings */}
+        <Popover>
+          <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-1.5 md:p-2 rounded-md cursor-pointer border border-white/5 bg-zinc-900/50">
+            <SlidersHorizontal className="w-4 h-4" />
+          </PopoverTrigger>
+          <PopoverContent className="w-80 bg-[#121214] border-white/10 p-5 mt-2 shadow-2xl">
+             <BrushControls brushSettings={brushSettings} onBrushSettingsChange={setBrushSettings} />
+          </PopoverContent>
+        </Popover>
+
+        {/* Brush Studio Modal */}
+        <Dialog open={isStudioOpen} onOpenChange={setIsStudioOpen}>
+          <DialogContent className="max-w-fit p-0 bg-transparent border-none shadow-none" showCloseButton={false}>
+            <BrushStudio 
+               brushSettings={brushSettings}
+               onBrushSettingsChange={setBrushSettings}
+               onSaveAsNew={handleSaveAsNewBrush}
+               onClose={() => setIsStudioOpen(false)}
+            />
+          </DialogContent>
+        </Dialog>
 
         <Popover>
           <PopoverTrigger className="text-zinc-400 hover:text-zinc-200 hover:bg-white/5 transition-colors p-1.5 md:p-2 rounded-md">
