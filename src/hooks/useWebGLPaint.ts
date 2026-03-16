@@ -155,6 +155,7 @@ export function useWebGLPaint(
     strokeProxyTarget: null as THREE.WebGLRenderTarget | null,
     isUsingProxy: false,
     strokePoints: [] as StrokePoint[],
+    targetPool: [] as THREE.WebGLRenderTarget[],
   });
 
   const undoStackRef = useRef<{ layerId: string; target: THREE.WebGLRenderTarget, isMask: boolean }[]>([]);
@@ -277,8 +278,34 @@ export function useWebGLPaint(
     stateRef.current.needsComposite = true;
   }, []);
 
+  const getTargetFromPool = useCallback((width: number, height: number) => {
+    const state = stateRef.current;
+    // Find matching target in pool
+    const idx = state.targetPool.findIndex(t => t.width === width && t.height === height);
+    if (idx !== -1) {
+      return state.targetPool.splice(idx, 1)[0];
+    }
+    // Allocate new if none available
+    return new THREE.WebGLRenderTarget(width, height, {
+      minFilter: THREE.LinearFilter,
+      magFilter: THREE.LinearFilter,
+      format: THREE.RGBAFormat,
+      generateMipmaps: false,
+    });
+  }, []);
+
+  const returnTargetToPool = useCallback((target: THREE.WebGLRenderTarget) => {
+    const state = stateRef.current;
+    state.targetPool.push(target);
+    // Limit pool size
+    if (state.targetPool.length > 8) {
+      const oldest = state.targetPool.shift();
+      oldest?.dispose();
+    }
+  }, []);
+
   const cloneTarget = useCallback((source: THREE.WebGLRenderTarget) => {
-    const clone = source.clone();
+    const clone = getTargetFromPool(source.width, source.height);
     // Copy data from source to clone
     const renderer = gl;
     const currentTarget = renderer.getRenderTarget();
@@ -302,7 +329,7 @@ export function useWebGLPaint(
     renderer.setRenderTarget(currentTarget);
     gl.setClearColor(oldClearColor, oldClearAlpha);
     return clone;
-  }, [gl]);
+  }, [gl, getTargetFromPool]);
 
   const markChannelDirty = useCallback((type: PBRMapType | 'all') => {
     const state = stateRef.current;
@@ -328,12 +355,7 @@ export function useWebGLPaint(
   const addLayer = useCallback((nameArg: any = 'New Layer') => {
     const name = (typeof nameArg === 'string') ? nameArg : 'New Layer';
     const state = stateRef.current;
-    const newTarget = new THREE.WebGLRenderTarget(state.textureSize, state.textureSize, {
-      minFilter: THREE.LinearFilter,
-      magFilter: THREE.LinearFilter,
-      format: THREE.RGBAFormat,
-      generateMipmaps: false,
-    });
+    const newTarget = getTargetFromPool(state.textureSize, state.textureSize);
 
     // Clear it
     const oldRT = gl.getRenderTarget();
@@ -385,26 +407,38 @@ export function useWebGLPaint(
   }, [layers]);
 
   // ---- Painting Logic ----
+  const saveUndoStateManual = useCallback((layerId: string, target: THREE.WebGLRenderTarget, isMask: boolean) => {
+    undoStackRef.current.push({ layerId, target, isMask });
+    if (undoStackRef.current.length > MAX_HISTORY) {
+        const oldest = undoStackRef.current.shift();
+        if (oldest) returnTargetToPool(oldest.target);
+    }
+  }, [returnTargetToPool]);
+
   const saveUndoState = useCallback(() => {
     const active = getActiveLayer();
     if (!active || !active.target) return;
     
     // Clear redo stack on new action
-    redoStackRef.current.forEach(item => item.target.dispose());
+    redoStackRef.current.forEach(item => returnTargetToPool(item.target));
     redoStackRef.current = [];
 
     // Push clone to undo
     const targetToClone = active.isEditingMask && active.maskTarget ? active.maskTarget : active.target;
     if (targetToClone) {
         const snapshot = cloneTarget(targetToClone);
-        undoStackRef.current.push({ layerId: active.id, target: snapshot, isMask: !!(active.isEditingMask && active.maskTarget) });
-        
-        if (undoStackRef.current.length > MAX_HISTORY) {
-          const oldest = undoStackRef.current.shift();
-          if (oldest) oldest.target.dispose();
-        }
+        saveUndoStateManual(active.id, snapshot, !!(active.isEditingMask && active.maskTarget));
     }
-  }, [getActiveLayer, cloneTarget]);
+  }, [getActiveLayer, cloneTarget, saveUndoStateManual, returnTargetToPool]);
+
+  // Handle Redo stack similarly
+  const saveRedoState = useCallback((target: THREE.WebGLRenderTarget, layerId: string, isMask: boolean) => {
+    redoStackRef.current.push({ layerId, target, isMask });
+    if (redoStackRef.current.length > MAX_HISTORY) {
+        const oldest = redoStackRef.current.shift();
+        if (oldest) returnTargetToPool(oldest.target);
+    }
+  }, [returnTargetToPool]);
 
   const drawStamp = useCallback((
     worldPos: THREE.Vector3, 
@@ -1251,8 +1285,9 @@ export function useWebGLPaint(
       const state = stateRef.current;
       if (state.needsComposite) {
         compositeAllLayers();
-      } else if (state.staggerStep === 2) {
+      } else if (state.staggerStep === 2 && !state.isPainting) {
         // Run sync on a separate frame after dilation to prevent single-frame spikes
+        // SKIP during painting to avoid readPixels pipeline stall
         syncPreviewCanvas();
         state.staggerStep = 0;
       }
@@ -1829,12 +1864,12 @@ export function useWebGLPaint(
     const targetToClone = step.isMask ? activeLayer.maskTarget : activeLayer.target;
     if (targetToClone) {
         const currentState = cloneTarget(targetToClone);
-        redoStackRef.current.push({ layerId: activeLayer.id, target: currentState, isMask: step.isMask });
+        saveRedoState(currentState, activeLayer.id, step.isMask);
     }
 
     restoreSnapshotToLayer(step.layerId, step.target, step.isMask);
-    step.target.dispose(); // clean up memory after use
-  }, [layers, cloneTarget, restoreSnapshotToLayer]);
+    returnTargetToPool(step.target); // Recycle!
+  }, [layers, cloneTarget, restoreSnapshotToLayer, returnTargetToPool]);
 
   const redo = useCallback(() => {
     if (redoStackRef.current.length === 0) return;
@@ -1849,12 +1884,12 @@ export function useWebGLPaint(
     const targetToClone = step.isMask ? activeLayer.maskTarget : activeLayer.target;
     if (targetToClone) {
         const currentState = cloneTarget(targetToClone);
-        undoStackRef.current.push({ layerId: activeLayer.id, target: currentState, isMask: step.isMask });
+        saveUndoStateManual(activeLayer.id, currentState, step.isMask);
     }
 
     restoreSnapshotToLayer(step.layerId, step.target, step.isMask);
-    step.target.dispose();
-  }, [layers, cloneTarget, restoreSnapshotToLayer]);
+    returnTargetToPool(step.target); // Recycle!
+  }, [layers, cloneTarget, restoreSnapshotToLayer, returnTargetToPool]);
 
   const exportTexture = useCallback((format: 'png' | 'jpeg') => {
     const state = stateRef.current;
