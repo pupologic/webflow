@@ -282,10 +282,11 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
         event.stopPropagation();
         
         // Manual ray calculation to be safe and independent of R3F event raycaster
+        const rect = gl.domElement.getBoundingClientRect();
         const raycaster = new THREE.Raycaster();
         const mouse = new THREE.Vector2(
-          (event.clientX / gl.domElement.clientWidth) * 2 - 1,
-          -(event.clientY / gl.domElement.clientHeight) * 2 + 1
+          ((event.clientX - rect.left) / rect.width) * 2 - 1,
+          -((event.clientY - rect.top) / rect.height) * 2 + 1
         );
         raycaster.setFromCamera(mouse, camera);
 
@@ -328,6 +329,8 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
       }
       
       let pressure = nativeEvent.pointerType === 'pen' ? nativeEvent.pressure : 1.0;
+      // Stylus fix: some tablets report 0 on first touchdown
+      if (pressure === 0 && nativeEvent.pointerType === 'pen') pressure = 0.5;
       if (pressure === 0 && nativeEvent.pointerType !== 'pen') pressure = 1.0;
       
       onPaintingChange?.(true);
@@ -350,6 +353,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
       }
 
       let pressure = nativeEvent.pointerType === 'pen' ? nativeEvent.pressure : 1.0;
+      if (pressure === 0 && nativeEvent.pointerType === 'pen') pressure = 0.5;
       if (pressure === 0 && nativeEvent.pointerType !== 'pen') pressure = 1.0;
 
       if (brushSettings.mode as any === 'gradient') return;
@@ -406,10 +410,11 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
       if (!gradientSession?.isCreating || !setGradientSession || !previewGradient) return;
 
       // Project onto plane using screen coordinates
+      const rect = gl.domElement.getBoundingClientRect();
       const raycaster = new THREE.Raycaster();
       const mouse = new THREE.Vector2(
-        (e.clientX / window.innerWidth) * 2 - 1,
-        -(e.clientY / window.innerHeight) * 2 + 1
+        ((e.clientX - rect.left) / rect.width) * 2 - 1,
+        -((e.clientY - rect.top) / rect.height) * 2 + 1
       );
       raycaster.setFromCamera(mouse, camera);
 
@@ -564,32 +569,44 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
             const axis = brushSettings.symmetryAxis || 'x';
             const symmetryPoints: { pos: THREE.Vector3, normal: THREE.Vector3 }[] = [];
 
-            if (mode === 'mirror') {
-              const pos = cursor.point.clone();
-              const norm = cursor.normal.clone();
-              if (axis === 'x') { pos.x *= -1; norm.x *= -1; }
-              else if (axis === 'y') { pos.y *= -1; norm.y *= -1; }
-              else if (axis === 'z') { pos.z *= -1; norm.z *= -1; }
-              symmetryPoints.push({ pos, normal: norm });
-            } else if (mode === 'radial') {
+            if (mode === 'mirror' && groupRef.current) {
+              const localPos = groupRef.current.worldToLocal(cursor.point.clone());
+              const localNorm = cursor.normal.clone();
+              
+              if (axis === 'x') { localPos.x *= -1; localNorm.x *= -1; }
+              else if (axis === 'y') { localPos.y *= -1; localNorm.y *= -1; }
+              else if (axis === 'z') { localPos.z *= -1; localNorm.z *= -1; }
+              
+              symmetryPoints.push({ 
+                pos: groupRef.current.localToWorld(localPos), 
+                normal: localNorm 
+              });
+            } else if (mode === 'radial' && groupRef.current) {
               const points = brushSettings.radialPoints || 4;
               const angleStep = (Math.PI * 2) / points;
+              
+              const localOrigin = groupRef.current.worldToLocal(cursor.point.clone());
+              
               for (let i = 1; i < points; i++) {
-                const pos = cursor.point.clone();
-                const norm = cursor.normal.clone();
+                const localPos = localOrigin.clone();
+                const localNorm = cursor.normal.clone();
                 const theta = angleStep * i;
                 
                 if (axis === 'y') {
-                  pos.set(cursor.point.x * Math.cos(theta) - cursor.point.z * Math.sin(theta), cursor.point.y, cursor.point.x * Math.sin(theta) + cursor.point.z * Math.cos(theta));
-                  norm.set(cursor.normal.x * Math.cos(theta) - cursor.normal.z * Math.sin(theta), cursor.normal.y, cursor.normal.x * Math.sin(theta) + cursor.normal.z * Math.cos(theta));
+                  localPos.set(localOrigin.x * Math.cos(theta) - localOrigin.z * Math.sin(theta), localOrigin.y, localOrigin.x * Math.sin(theta) + localOrigin.z * Math.cos(theta));
+                  localNorm.set(cursor.normal.x * Math.cos(theta) - cursor.normal.z * Math.sin(theta), cursor.normal.y, cursor.normal.x * Math.sin(theta) + cursor.normal.z * Math.cos(theta));
                 } else if (axis === 'x') {
-                  pos.set(cursor.point.x, cursor.point.y * Math.cos(theta) - cursor.point.z * Math.sin(theta), cursor.point.y * Math.sin(theta) + cursor.point.z * Math.cos(theta));
-                  norm.set(cursor.normal.x, cursor.normal.y * Math.cos(theta) - cursor.normal.z * Math.sin(theta), cursor.normal.y * Math.sin(theta) + cursor.normal.z * Math.cos(theta));
+                  localPos.set(localOrigin.x, localOrigin.y * Math.cos(theta) - localOrigin.z * Math.sin(theta), localOrigin.y * Math.sin(theta) + localOrigin.z * Math.cos(theta));
+                  localNorm.set(cursor.normal.x, cursor.normal.y * Math.cos(theta) - cursor.normal.z * Math.sin(theta), cursor.normal.y * Math.sin(theta) + cursor.normal.z * Math.cos(theta));
                 } else if (axis === 'z') {
-                  pos.set(cursor.point.x * Math.cos(theta) - cursor.point.y * Math.sin(theta), cursor.point.x * Math.sin(theta) + cursor.point.y * Math.cos(theta), cursor.point.z);
-                  norm.set(cursor.normal.x * Math.cos(theta) - cursor.normal.y * Math.sin(theta), cursor.normal.x * Math.sin(theta) + cursor.normal.y * Math.cos(theta), cursor.normal.z);
+                  localPos.set(localOrigin.x * Math.cos(theta) - localOrigin.y * Math.sin(theta), localOrigin.x * Math.sin(theta) + localOrigin.y * Math.cos(theta), localOrigin.z);
+                  localNorm.set(cursor.normal.x * Math.cos(theta) - cursor.normal.y * Math.sin(theta), cursor.normal.x * Math.sin(theta) + cursor.normal.y * Math.cos(theta), cursor.normal.z);
                 }
-                symmetryPoints.push({ pos, normal: norm });
+                
+                symmetryPoints.push({ 
+                  pos: groupRef.current.localToWorld(localPos), 
+                  normal: localNorm 
+                });
               }
             }
 

@@ -645,13 +645,18 @@ export function useWebGLPaint(
         const symMode = brushSettings.symmetryMode;
         const axis = brushSettings.symmetryAxis || 'x';
         
-        if (symMode === 'mirror') {
-          const mirroredPos = worldPos.clone();
-          const mirroredNormal = normal.clone();
+        if (symMode === 'mirror' && groupRef.current) {
+          const localPos = groupRef.current.worldToLocal(worldPos.clone());
+          const localNormal = normal.clone(); // Normal rotation is handled by world transformation later
           
-          if (axis === 'x') { mirroredPos.x *= -1; mirroredNormal.x *= -1; }
-          else if (axis === 'y') { mirroredPos.y *= -1; mirroredNormal.y *= -1; }
-          else if (axis === 'z') { mirroredPos.z *= -1; mirroredNormal.z *= -1; }
+          if (axis === 'x') { localPos.x *= -1; localNormal.x *= -1; }
+          else if (axis === 'y') { localPos.y *= -1; localNormal.y *= -1; }
+          else if (axis === 'z') { localPos.z *= -1; localNormal.z *= -1; }
+          
+          const mirroredPos = groupRef.current.localToWorld(localPos);
+          const mirroredNormal = localNormal.clone(); 
+          // Re-normalize and potentially re-transform direction if needed, 
+          // but decal projector uses worldPos/normal.
           
           // View-Projection Matrix
           const vpMatrix = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
@@ -680,44 +685,49 @@ export function useWebGLPaint(
           );
           renderDecal();
         } 
-        else if (symMode === 'radial') {
+        else if (symMode === 'radial' && groupRef.current) {
           const points = brushSettings.radialPoints || 4;
           const angleStep = (Math.PI * 2) / points;
           
+          const localOrigin = groupRef.current.worldToLocal(worldPos.clone());
+          
           for (let i = 1; i < points; i++) {
-            const radialPos = worldPos.clone();
-            const radialNormal = normal.clone();
+            const localPos = localOrigin.clone();
+            const localNormal = normal.clone();
             const theta = angleStep * i;
             
             if (axis === 'y') {
-              // Rotate around Y axis
-              const x = worldPos.x * Math.cos(theta) - worldPos.z * Math.sin(theta);
-              const z = worldPos.x * Math.sin(theta) + worldPos.z * Math.cos(theta);
-              radialPos.set(x, worldPos.y, z);
+              // Rotate around Y axis in LOCAL space
+              const x = localOrigin.x * Math.cos(theta) - localOrigin.z * Math.sin(theta);
+              const z = localOrigin.x * Math.sin(theta) + localOrigin.z * Math.cos(theta);
+              localPos.set(x, localOrigin.y, z);
               
               const nx = normal.x * Math.cos(theta) - normal.z * Math.sin(theta);
               const nz = normal.x * Math.sin(theta) + normal.z * Math.cos(theta);
-              radialNormal.set(nx, normal.y, nz);
+              localNormal.set(nx, normal.y, nz);
             } else if (axis === 'x') {
-              // Rotate around X axis
-              const y = worldPos.y * Math.cos(theta) - worldPos.z * Math.sin(theta);
-              const z = worldPos.y * Math.sin(theta) + worldPos.z * Math.cos(theta);
-              radialPos.set(worldPos.x, y, z);
+              // Rotate around X axis in LOCAL space
+              const y = localOrigin.y * Math.cos(theta) - localOrigin.z * Math.sin(theta);
+              const z = localOrigin.y * Math.sin(theta) + localOrigin.z * Math.cos(theta);
+              localPos.set(localOrigin.x, y, z);
               
               const ny = normal.y * Math.cos(theta) - normal.z * Math.sin(theta);
               const nz = normal.y * Math.sin(theta) + normal.z * Math.cos(theta);
-              radialNormal.set(normal.x, ny, nz);
+              localNormal.set(normal.x, ny, nz);
             } else if (axis === 'z') {
-              // Rotate around Z axis
-              const x = worldPos.x * Math.cos(theta) - worldPos.y * Math.sin(theta);
-              const y = worldPos.x * Math.sin(theta) + worldPos.y * Math.cos(theta);
-              radialPos.set(x, y, worldPos.z);
+              // Rotate around Z axis in LOCAL space
+              const x = localOrigin.x * Math.cos(theta) - localOrigin.y * Math.sin(theta);
+              const y = localOrigin.x * Math.sin(theta) + localOrigin.y * Math.cos(theta);
+              localPos.set(x, y, localOrigin.z);
               
               const nx = normal.x * Math.cos(theta) - normal.y * Math.sin(theta);
               const ny = normal.x * Math.sin(theta) + normal.y * Math.cos(theta);
-              radialNormal.set(nx, ny, normal.z);
+              localNormal.set(nx, ny, normal.z);
             }
             
+            const radialPos = groupRef.current.localToWorld(localPos);
+            const radialNormal = localNormal.clone();
+
             // View-Projection Matrix
             const vpMatrix = new THREE.Matrix4().multiplyMatrices(camera.projectionMatrix, camera.matrixWorldInverse);
 

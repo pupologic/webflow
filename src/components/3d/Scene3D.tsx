@@ -142,7 +142,7 @@ export const Scene3D: React.FC<Scene3DProps> = ({
           antialias: true, 
           alpha: true,
         }}
-        style={{ width: '100%', height: '100%' }}
+        style={{ width: '100%', height: '100%', touchAction: 'none' }}
       >
         <CameraController focalLength={focalLength} />
         {/* Transparent background to allow the div's gradient to show through */}
