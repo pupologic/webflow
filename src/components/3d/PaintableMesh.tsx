@@ -217,7 +217,7 @@ export const PaintableMesh: React.FC<PaintableMeshProps> = ({
     if (hit) {
       const dist = camera.position.distanceTo(hit.point);
       let radius = 0.1;
-      const dynamicSize = brushSettings.size * Math.max(0.05, pressure);
+      const dynamicSize = Math.max(4, brushSettings.size * Math.max(0.05, pressure));
 
       if ((camera as THREE.PerspectiveCamera).isPerspectiveCamera) {
         const fov = (camera as THREE.PerspectiveCamera).fov * (Math.PI / 180);
