@@ -57,7 +57,6 @@ function App() {
     usePressureSize: true,
     usePressureOpacity: true,
     pressureCurve: 1.0,
-    performanceMode: false,
   });
 
   const [modelName, setModelName] = useState<string>('Suzanne');

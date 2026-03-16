@@ -89,18 +89,6 @@ export const BrushControls: React.FC<BrushControlsProps> = ({
           </button>
         </div>
 
-        <div className="flex items-center justify-between bg-zinc-900/50 p-2 rounded-lg border border-white/5">
-          <div className="flex flex-col">
-            <span className="text-xs text-zinc-300">Performance Mode</span>
-            <span className="text-[10px] text-zinc-500 font-medium whitespace-nowrap">Half-Res active stroke (Fast)</span>
-          </div>
-          <button
-            onClick={() => onBrushSettingsChange({ ...brushSettings, performanceMode: !brushSettings.performanceMode })}
-            className={`w-10 h-5 rounded-full relative transition-colors ${brushSettings.performanceMode ? 'bg-emerald-500' : 'bg-zinc-700'}`}
-          >
-            <div className={`absolute top-1 w-3 h-3 bg-white rounded-full transition-all ${brushSettings.performanceMode ? 'left-6' : 'left-1'}`} />
-          </button>
-        </div>
       </div>
     </div>
   );

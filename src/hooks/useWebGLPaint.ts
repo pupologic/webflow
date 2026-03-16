@@ -152,9 +152,6 @@ export function useWebGLPaint(
     lastFollowAngle: 0,
     strokeBBox: { minX: 1, minY: 1, maxX: 0, maxY: 0 },
     frameStrokeBBox: { minX: 1, minY: 1, maxX: 0, maxY: 0 },
-    strokeProxyTarget: null as THREE.WebGLRenderTarget | null,
-    isUsingProxy: false,
-    strokePoints: [] as StrokePoint[],
     targetPool: [] as THREE.WebGLRenderTarget[],
   });
 
@@ -176,7 +173,6 @@ export function useWebGLPaint(
     if (state.dilatedTarget) state.dilatedTarget.dispose();
     if (state.uvMaskTarget) state.uvMaskTarget.dispose();
     if (state.snapshotTarget) state.snapshotTarget.dispose();
-    if (state.strokeProxyTarget) state.strokeProxyTarget.dispose();
 
     state.textureSize = size;
     const targetOpts = {
@@ -190,7 +186,6 @@ export function useWebGLPaint(
     state.dilatedTarget = new THREE.WebGLRenderTarget(size, size, targetOpts);
     state.uvMaskTarget = new THREE.WebGLRenderTarget(size, size, targetOpts);
     state.snapshotTarget = new THREE.WebGLRenderTarget(size, size, targetOpts);
-    state.strokeProxyTarget = new THREE.WebGLRenderTarget(size / 2, size / 2, targetOpts);
 
     state.pbrTargets = {
       albedo: new THREE.WebGLRenderTarget(size, size, targetOpts),
@@ -447,23 +442,10 @@ export function useWebGLPaint(
     opacityPressure: number = 1.0,
     normal: THREE.Vector3 = new THREE.Vector3(0, 0, 1),
     angle: number = 0.0,
-    uv: THREE.Vector2 = new THREE.Vector2(),
-    isReplaying: boolean = false
+    uv: THREE.Vector2 = new THREE.Vector2()
   ) => {
     const state = stateRef.current;
     
-    // Record point for Performance Mode replay
-    if (state.isUsingProxy && !isReplaying) {
-      state.strokePoints.push({
-        pos: worldPos.clone(),
-        pressure: sizePressure,
-        opacityPressure,
-        normal: normal.clone(),
-        angle,
-        uv: uv.clone()
-      });
-    }
-
     const { color, opacity, hardness, type, mode, size, blurStrength, smudgeStrength } = brushSettings;
 
     const dist = camera.position.distanceTo(worldPos);
@@ -628,7 +610,7 @@ export function useWebGLPaint(
         state.snapshotTarget?.texture || null,
         smudgeDisplacement,
         blurStrength || 1.0,
-        state.isUsingProxy ? state.textureSize / 2 : state.textureSize,
+        state.textureSize,
         smudgeStrength !== undefined ? smudgeStrength : 1.0
       );
       
@@ -638,8 +620,7 @@ export function useWebGLPaint(
       gl.autoClear = false;
       
       const targetRT = (activeLayer.isEditingMask && activeLayer.maskTarget) ? activeLayer.maskTarget : activeLayer.target;
-      const finalTarget = state.isUsingProxy ? state.strokeProxyTarget : targetRT;
-      gl.setRenderTarget(finalTarget);
+      gl.setRenderTarget(targetRT);
 
       const renderDecal = () => {
         if (groupRef.current) {
@@ -694,7 +675,7 @@ export function useWebGLPaint(
             state.snapshotTarget?.texture || null,
             smudgeDisplacement,
             blurStrength || 1.0,
-            state.isUsingProxy ? state.textureSize / 2 : state.textureSize,
+            state.textureSize,
             smudgeStrength !== undefined ? smudgeStrength : 1.0
           );
           renderDecal();
@@ -759,7 +740,7 @@ export function useWebGLPaint(
               state.snapshotTarget?.texture || null,
               smudgeDisplacement,
               blurStrength || 1.0,
-              state.isUsingProxy ? state.textureSize / 2 : state.textureSize,
+              state.textureSize,
               smudgeStrength !== undefined ? smudgeStrength : 1.0
             );
             renderDecal();
@@ -789,42 +770,14 @@ export function useWebGLPaint(
       state.lazyPoint.copy(intersection.point);
       state.hasLazyPoint = true;
     }
-
+    
     state.lastHitPoint.copy(intersection.point);
-    const uv = intersection.uv?.clone() || new THREE.Vector2();
-    state.strokeBBox = { minX: uv.x, minY: uv.y, maxX: uv.x, maxY: uv.y };
-    state.frameStrokeBBox = { minX: uv.x, minY: uv.y, maxX: uv.x, maxY: uv.y };
-    state.strokePoints = [];
-
+    const uvInit = intersection.uv?.clone() || new THREE.Vector2();
+    state.lastHitUV.copy(uvInit);
     saveUndoState();
     
-    const activeLine = getActiveLayer();
-    if (activeLine) {
-      state.isUsingProxy = !!(brushSettings.performanceMode && activeLine.target && (mode === 'paint' || mode === 'erase'));
-      if (state.isUsingProxy && state.strokeProxyTarget) {
-        const renderer = gl;
-        const currentRT = renderer.getRenderTarget();
-        const sourceRT = (activeLine.isEditingMask && activeLine.maskTarget) ? activeLine.maskTarget : activeLine.target;
-        
-        renderer.setRenderTarget(state.strokeProxyTarget);
-        renderer.setClearColor(0x000000, 0);
-        renderer.clear();
-        
-        const mat = new THREE.MeshBasicMaterial({ 
-          map: sourceRT!.texture, 
-          transparent: true, 
-          depthTest: false, 
-          depthWrite: false, 
-          blending: THREE.NoBlending 
-        });
-        const oldMat = state.compositeQuad.material;
-        state.compositeQuad.material = mat;
-        renderer.render(state.compositeScene, state.compositeCamera);
-        state.compositeQuad.material = oldMat;
-        mat.dispose();
-        renderer.setRenderTarget(currentRT);
-      }
-
+    const activeLayer = getActiveLayer();
+    if (activeLayer) {
       const normal = intersection.face?.normal.clone() || new THREE.Vector3(0, 0, 1);
       if (intersection.object) normal.transformDirection(intersection.object.matrixWorld).normalize();
       
@@ -848,7 +801,7 @@ export function useWebGLPaint(
               if (state.uvMaskTarget) {
                   // Perform dilation on the snapshot to fix seam artifacts
                   state.dilationMaterial.setMap(
-                      activeLine.target!.texture, 
+                      activeLayer.target!.texture, 
                       state.uvMaskTarget.texture, 
                       state.textureSize, 
                       state.textureSize, 
@@ -857,7 +810,7 @@ export function useWebGLPaint(
                   state.compositeQuad.material = state.dilationMaterial;
               } else {
                   const mat = new THREE.MeshBasicMaterial({ 
-                    map: activeLine.target!.texture, 
+                    map: activeLayer.target!.texture, 
                     depthTest: false, depthWrite: false, transparent: true, blending: THREE.NoBlending 
                   });
                   state.compositeQuad.material = mat;
@@ -874,7 +827,7 @@ export function useWebGLPaint(
               state.hasSnapshot = true;
           };
 
-          if (activeLine.target) {
+          if (activeLayer.target) {
               updateSnapshot();
               (state as any).updateSnapshot = updateSnapshot;
           }
@@ -885,7 +838,7 @@ export function useWebGLPaint(
 
       const sPressure = brushSettings.usePressureSize ? pressure : 1.0;
       const oPressure = brushSettings.usePressureOpacity ? pressure : 1.0;
-      drawStamp(intersection.point, activeLine, sPressure, oPressure, normal, angle, uv);
+      drawStamp(intersection.point, activeLayer, sPressure, oPressure, normal, angle, uv);
     }
   }, [getActiveLayer, drawStamp, saveUndoState, groupRef, onColorPaintedRef, brushSettings, gl]);
 
@@ -1019,38 +972,11 @@ export function useWebGLPaint(
 
   const stopPainting = useCallback(() => {
     const state = stateRef.current;
-    
-    // Commit proxy results if active using HIGH-FIDELITY replay
-    if (state.isUsingProxy && state.strokePoints.length > 0) {
-        const activeLayer = getActiveLayer();
-        if (activeLayer && activeLayer.target) {
-            // 1. Terminate proxy mode to ensure drawStamp renders to full-res
-            state.isUsingProxy = false;
-            
-            // 2. Replay the entire stroke at full resolution
-            state.strokePoints.forEach(p => {
-                drawStamp(p.pos, activeLayer, p.pressure, p.opacityPressure, p.normal, p.angle, p.uv, true);
-            });
-            
-            // 3. Clear proxy buffer
-            if (state.strokeProxyTarget) {
-                const renderer = gl;
-                const currentRT = renderer.getRenderTarget();
-                renderer.setRenderTarget(state.strokeProxyTarget);
-                renderer.setClearColor(0x000000, 0);
-                renderer.clear();
-                renderer.setRenderTarget(currentRT);
-            }
-        }
-    }
-
     state.isPainting = false;
-    state.isUsingProxy = false;
-    state.strokePoints = [];
     state.hasLazyPoint = false;
     state.staggerStep = 1; // Start post-stroke cleanup staggered
     state.needsComposite = true;
-  }, [gl, getActiveLayer, drawStamp]);
+  }, [getActiveLayer]);
 
   const syncPreviewCanvas = useCallback(() => {
     const state = stateRef.current;
@@ -1213,17 +1139,9 @@ export function useWebGLPaint(
         gl.clear();
 
         if (layer.maskEnabled && layer.maskTarget) {
-            let layerTex = layer.target.texture;
-            if (state.isUsingProxy && layer.id === activeLayerId && state.strokeProxyTarget) {
-                layerTex = state.strokeProxyTarget.texture;
-            }
-            mat.setLayerMasked(layerTex, currentSrc.texture, layer.maskTarget.texture, layer.opacity, layer.blendMode, layer.intensity || 1.0);
+            mat.setLayerMasked(layer.target.texture, currentSrc.texture, layer.maskTarget.texture, layer.opacity, layer.blendMode, layer.intensity || 1.0);
         } else {
-            let layerTex = layer.target.texture;
-            if (state.isUsingProxy && layer.id === activeLayerId && state.strokeProxyTarget) {
-                layerTex = state.strokeProxyTarget.texture;
-            }
-            mat.setLayer(layerTex, currentSrc.texture, layer.opacity, layer.blendMode, layer.intensity || 1.0);
+            mat.setLayer(layer.target.texture, currentSrc.texture, layer.opacity, layer.blendMode, layer.intensity || 1.0);
         }
 
         state.compositeQuad.material = mat;
@@ -1243,12 +1161,12 @@ export function useWebGLPaint(
           gl.setRenderTarget(targetRT);
           
           if (state.isPainting) {
-            // SKIP HEAVY DILATION DURING ACTIVE STROKE
-            // Just blit the composite result directly for speed
-            const blitMat = new THREE.MeshBasicMaterial({ map: currentSrc.texture, transparent: true, blending: THREE.NoBlending });
-            state.compositeQuad.material = blitMat;
+            // LIGHTWEIGHT DILATION DURING ACTIVE STROKE
+            // Use a smaller radius (4px) to hide seams without killing performance
+            const interactiveRadius = 4.0;
+            state.dilationMaterial.setMap(currentSrc.texture, (state.uvMaskTarget as THREE.WebGLRenderTarget).texture, state.textureSize, state.textureSize, interactiveRadius);
+            state.compositeQuad.material = state.dilationMaterial;
             gl.render(state.compositeScene, state.compositeCamera);
-            blitMat.dispose();
           } else {
             // Run high-quality 16px dilation ONLY on idle frames (staggerStep/stopPainting)
             const currentRadius = 16.0;
