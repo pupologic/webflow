@@ -205,7 +205,7 @@ function App() {
 
   const textureRef = useRef<THREE.CanvasTexture | null>(null);
 
-  useEffect(() => {
+  const loadSuzanne = useCallback(() => {
     try {
       const loader = new OBJLoader();
       const object = loader.parse(suzanneObjStr);
@@ -229,11 +229,18 @@ function App() {
 
       if (parts.length > 0) {
         setModelParts(parts);
+        setModelName('Suzanne');
+        return true;
       }
     } catch (err) {
       console.error('Failed to parse Suzanne.obj', err);
     }
+    return false;
   }, []);
+
+  useEffect(() => {
+    loadSuzanne();
+  }, [loadSuzanne]);
 
   const handleTextureChange = useCallback((texture: THREE.Texture | null, canvas?: HTMLCanvasElement) => {
     setCurrentTexture(texture);
@@ -438,13 +445,34 @@ function App() {
   const handleNewProject = (type: 'Suzanne' | 'Cube', file?: File) => {
     setIsLoading(true);
     setLoadingProgress(0);
+    
+    // Reset transforms
+    setModelTransform({
+      position: [0, 0, 0],
+      rotation: [0, 0, 0],
+      scale: [1, 1, 1]
+    });
+
     if (file) {
       handleObjUpload(file);
     } else {
-      setModelName(type);
+      if (type === 'Suzanne') {
+        loadSuzanne();
+      }
+      // If we had a Cube model, we'd handle it here
+      handleClear();
     }
+    
+    // Reset overlays
+    setOverlays([]);
+    
     setCurrentProjectId(null);
     setIsDashboard(false);
+    
+    // Reset status after a short delay
+    setTimeout(() => {
+      setIsLoading(false);
+    }, 500);
   };
 
   const handleLoadProject = (project: SavedProject) => {
