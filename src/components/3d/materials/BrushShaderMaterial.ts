@@ -50,21 +50,25 @@ const fragmentShader = `
     }
 
     void main() {
+      float alphaMultiplier = 1.0;
+
       // 1. Normal Masking: Only paint surfaces facing the brush
       float angleFactor = dot(normalize(vNormal), normalize(uBrushNormal));
-      if (angleFactor < 0.2) discard; 
+      // Soften the cutoff instead of discarding:
+      alphaMultiplier *= smoothstep(0.05, 0.4, angleFactor);
 
       // 2. View Masking: Only paint surfaces facing the camera
       vec3 viewDir = normalize(uCameraPos - vWorldPos);
       float viewFactor = dot(normalize(vNormal), viewDir);
-      if (viewFactor < 0.1) discard;
+      // Soften the cutoff instead of discarding:
+      alphaMultiplier *= smoothstep(0.01, 0.2, viewFactor);
 
       // 3. Depth Masking: Projector volume
       float depthDist = abs(dot(vWorldPos - uBrushPos, normalize(uBrushNormal)));
-      if (depthDist > uRadius * 1.0) discard;
-      float depthAlpha = 1.0 - smoothstep(uRadius * 0.5, uRadius * 1.0, depthDist);
+      if (depthDist > uRadius * 1.5) discard; // Allow a bit more depth for slanted surfaces
+      float depthAlpha = 1.0 - smoothstep(uRadius * 0.5, uRadius * 1.5, depthDist);
 
-      float alphaMultiplier = depthAlpha;
+      alphaMultiplier *= depthAlpha;
 
       // 3. Project to 2D Plane (Decal Projection)
       vec3 p = vWorldPos - uBrushPos;
@@ -82,13 +86,13 @@ const fragmentShader = `
             float dist = length(localPos);
             if (dist > uRadius) discard;
             float normalizedDist = dist / uRadius;
-            alphaMultiplier = 1.0 - smoothstep(uHardness, 1.0, normalizedDist);
+            alphaMultiplier *= 1.0 - smoothstep(uHardness, 1.0, normalizedDist);
           } else {
             vec2 d = abs(localPos);
             float maxDist = max(d.x, d.y);
             if (maxDist > uRadius) discard;
             float normalizedDist = maxDist / uRadius;
-            alphaMultiplier = 1.0 - smoothstep(uHardness, 1.0, normalizedDist);
+            alphaMultiplier *= 1.0 - smoothstep(uHardness, 1.0, normalizedDist);
           }
         } else {
           if (length(localPos) > uRadius) discard;
@@ -100,7 +104,7 @@ const fragmentShader = `
             alphaMultiplier = max(texColor.r, max(texColor.g, texColor.b));
           } else {
             // Alpha exists: standard brush
-            alphaMultiplier = texColor.a;
+            alphaMultiplier *= texColor.a;
           }
           float dist = length(localPos) / uRadius;
           alphaMultiplier *= (1.0 - smoothstep(uHardness, 1.0, dist));
@@ -111,10 +115,10 @@ const fragmentShader = `
         float dist = length(localPos);
         if (dist > uRadius) discard;
         float normalizedDist = dist / uRadius;
-        alphaMultiplier = 1.0 - smoothstep(uHardness, 1.0, normalizedDist);
+        alphaMultiplier *= 1.0 - smoothstep(uHardness, 1.0, normalizedDist);
       }
       
-      alphaMultiplier *= smoothstep(0.0, 0.2, angleFactor);
+
 
       // 4. Stencil Masking
       if (uUseStencil) {

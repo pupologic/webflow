@@ -32,10 +32,10 @@ const fragmentShader = `
     vec4 bestColor = vec4(0.0);
     int maxRad = int(uRadius);
     
-    for (int y = -16; y <= 16; y+=2) {
-      if (y > maxRad || y < -maxRad) continue;
-      for (int x = -16; x <= 16; x+=2) {
-        if (x > maxRad || x < -maxRad) continue;
+    for (int y = -32; y <= 32; y+=2) {
+      if (abs(float(y)) > uRadius) continue;
+      for (int x = -32; x <= 32; x+=2) {
+        if (abs(float(x)) > uRadius) continue;
         if (x == 0 && y == 0) continue;
         
         vec2 offset = vec2(float(x), float(y)) * uPixelSize;

@@ -967,19 +967,25 @@ export function useWebGLPaint(
          t
        );
 
-       subRaycaster.setFromCamera(lerpNDC, camera);
-       if (groupRef.current) {
-         const hits = subRaycaster.intersectObject(groupRef.current, true);
-         if (hits.length > 0) {
-           const hit = hits[0];
-           lerpPos.copy(hit.point);
-           if (hit.face) {
-             lerpNormal.copy(hit.face.normal);
-             if (hit.object) lerpNormal.transformDirection(hit.object.matrixWorld).normalize();
-           }
-           if (hit.uv) lerpUV.copy(hit.uv);
-         }
-       }
+        subRaycaster.setFromCamera(lerpNDC, camera);
+        if (groupRef.current) {
+          const hits = subRaycaster.intersectObject(groupRef.current, true);
+          if (hits.length > 0) {
+            const hit = hits[0];
+            lerpPos.copy(hit.point);
+            if (hit.face) {
+              const hitNormal = hit.face.normal.clone();
+              if (hit.object) hitNormal.transformDirection(hit.object.matrixWorld).normalize();
+              // Smoothly blend the normal to avoid sharp jumps at seams
+              lerpNormal.lerp(hitNormal, 0.4).normalize();
+            }
+            if (hit.uv) lerpUV.copy(hit.uv);
+          } else {
+            // Robust fallback: if no surface hit, use 3D lerp and try to keep normal from previous hit
+            // This prevents "losing" the mesh angle on tiny gaps
+            lerpNormal.copy(state.lastLazyNormal);
+          }
+        }
 
        // Update stroke bounding box with the sub-probed UV (crucial for Scissor Testing)
        state.strokeBBox.minX = Math.min(state.strokeBBox.minX, lerpUV.x);
@@ -1242,14 +1248,14 @@ export function useWebGLPaint(
           
           if (state.isPainting) {
             // LIGHTWEIGHT DILATION DURING ACTIVE STROKE
-            // Use a smaller radius (4px) to hide seams without killing performance
-            const interactiveRadius = 4.0;
+            // Use 8px to better cover seams on high-res models
+            const interactiveRadius = 8.0;
             state.dilationMaterial.setMap(currentSrc.texture, (state.uvMaskTarget as THREE.WebGLRenderTarget).texture, state.textureSize, state.textureSize, interactiveRadius);
             state.compositeQuad.material = state.dilationMaterial;
             gl.render(state.compositeScene, state.compositeCamera);
           } else {
-            // Run high-quality 16px dilation ONLY on idle frames (staggerStep/stopPainting)
-            const currentRadius = 16.0;
+            // Run high-quality 24px dilation ONLY on idle frames
+            const currentRadius = 24.0;
             state.dilationMaterial.setMap(currentSrc.texture, (state.uvMaskTarget as THREE.WebGLRenderTarget).texture, state.textureSize, state.textureSize, currentRadius);
             state.compositeQuad.material = state.dilationMaterial;
             gl.render(state.compositeScene, state.compositeCamera);
