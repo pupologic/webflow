@@ -129,7 +129,7 @@ function App() {
   const [showWireframe, setShowWireframe] = useState(false);
   const [flatShading, setFlatShading] = useState(false);
   const [textureResolution, setTextureResolution] = useState<number>(2048);
-  const [currentTexture, setCurrentTexture] = useState<THREE.Texture | null>(null);
+
   const [previewCanvas, setPreviewCanvas] = useState<HTMLCanvasElement | null>(null);
   const [layerControls, setLayerControls] = useState<any>(null);
   const initialLayersToLoadRef = useRef<any[] | null>(null);
@@ -249,8 +249,7 @@ function App() {
     loadSuzanne();
   }, [loadSuzanne]);
 
-  const handleTextureChange = useCallback((texture: THREE.Texture | null, canvas?: HTMLCanvasElement) => {
-    setCurrentTexture(texture);
+  const handleTextureChange = useCallback((_texture: THREE.Texture | null, canvas?: HTMLCanvasElement) => {
     if (canvas) setPreviewCanvas(canvas);
   }, []);
 
